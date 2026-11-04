@@ -1,49 +1,49 @@
 use std::path::Path;
 
-#[cfg(test)]
-use std::cell::RefCell;
-
-use crate::git::{GitBackend, GitPreparedMerge};
+use crate::git::{GitBackend, GitPreparedMerge, GitPullUpdate};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
-use super::pull_head_merge_preflight::{RootMergePullPlan, validate_root_merge_pull};
+use super::pull_head_member_preflight::refuse_update_collisions;
+use super::pull_head_merge_preflight::{RootPullPlan, validate_root_pull};
 use super::pull_head_plan::{PullHeadAction, PullHeadPlan, PullHeadSource};
 
-#[cfg(test)]
-thread_local! {
-    static BEFORE_PULL_BARRIER: RefCell<Option<Box<dyn FnOnce()>>> =
-        const { RefCell::new(None) };
-}
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        use std::cell::RefCell;
 
-#[cfg(test)]
-pub(crate) fn before_next_pull_barrier(callback: impl FnOnce() + 'static) {
-    BEFORE_PULL_BARRIER.with(|slot| {
-        assert!(
-            slot.borrow_mut().replace(Box::new(callback)).is_none(),
-            "a pull-barrier callback is already installed"
-        );
-    });
-}
+        thread_local! {
+            static BEFORE_PULL_BARRIER: RefCell<Option<Box<dyn FnOnce()>>> =
+                const { RefCell::new(None) };
+        }
 
-#[cfg(test)]
-fn run_before_pull_barrier() {
-    if let Some(callback) = BEFORE_PULL_BARRIER.with(|slot| slot.borrow_mut().take()) {
-        callback();
+        pub(crate) fn before_next_pull_barrier(callback: impl FnOnce() + 'static) {
+            BEFORE_PULL_BARRIER.with(|slot| {
+                assert!(
+                    slot.borrow_mut().replace(Box::new(callback)).is_none(),
+                    "a pull-barrier callback is already installed"
+                );
+            });
+        }
+
+        fn run_before_pull_barrier() {
+            if let Some(callback) = BEFORE_PULL_BARRIER.with(|slot| slot.borrow_mut().take()) {
+                callback();
+            }
+        }
+    } else {
+        fn run_before_pull_barrier() {}
     }
 }
 
-#[cfg(not(test))]
-fn run_before_pull_barrier() {}
-
-pub(crate) fn validate_pull_barrier<B: GitBackend>(
+pub(crate) fn validate_pull_barrier<B: GitBackend + GitPullUpdate>(
     backend: &B,
     root: &Path,
-    root_plan: Option<&RootMergePullPlan>,
+    root_plan: Option<&RootPullPlan>,
     member_plans: &[PullHeadPlan],
 ) -> ModelResult<()> {
     run_before_pull_barrier();
     if let Some(plan) = root_plan {
-        validate_root_merge_pull(backend, root, plan)?;
+        validate_root_pull(backend, root, plan)?;
     }
     for plan in member_plans {
         let member_root = root.join(&plan.state.path);
@@ -53,11 +53,12 @@ pub(crate) fn validate_pull_barrier<B: GitBackend>(
     Ok(())
 }
 
-fn validate_member_plan<B: GitBackend>(
+fn validate_member_plan<B: GitBackend + GitPullUpdate>(
     backend: &B,
     member_root: &Path,
     plan: &PullHeadPlan,
 ) -> ModelResult<()> {
+    // Drift first: the entries in the way are judged against the HEAD the plan saw.
     match &plan.action {
         PullHeadAction::Noop
         | PullHeadAction::SkipNoFetchRemote
@@ -86,7 +87,13 @@ fn validate_member_plan<B: GitBackend>(
             validate_source_ref(backend, member_root, source)?;
             validate_attached_head(backend, member_root, &plan.branch, source)
         }
-    }
+    }?;
+    refuse_update_collisions(
+        backend,
+        member_root,
+        plan.action.checkout_target(),
+        plan.action.replay(),
+    )
 }
 
 fn validate_source_ref<B: GitBackend>(
@@ -110,14 +117,14 @@ fn validate_source_ref<B: GitBackend>(
     Ok(())
 }
 
-fn validate_prepared<B: GitBackend>(
+fn validate_prepared<B: GitBackend + GitPullUpdate>(
     backend: &B,
     member_root: &Path,
     branch: &str,
     source: &PullHeadSource,
     prepared: &GitPreparedMerge,
 ) -> ModelResult<()> {
-    backend.validate_prepared_merge_upstream_state(
+    backend.validate_prepared_pull_update(
         member_root,
         branch,
         &source.expected_local,

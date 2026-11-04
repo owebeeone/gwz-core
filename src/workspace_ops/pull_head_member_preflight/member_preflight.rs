@@ -1,12 +1,12 @@
 use std::path::Path;
 
 use crate::artifact::{LockArtifact, ManifestArtifact, ManifestMember};
-use crate::git::{GitBackend, git_host};
+use crate::git::{GitBackend, GitPullUpdate, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::EventEmitter;
 
 use super::super::pull_head_plan::{PullHeadAction, PullHeadPlan, PullHeadSource};
-use super::member_validation::{pull_branch, pull_dirty_guard};
+use super::member_validation::{pull_branch, pull_dirty_guard, refuse_update_collisions};
 
 pub(crate) fn pull_head_member_preflight<B>(
     backend: &B,
@@ -18,7 +18,7 @@ pub(crate) fn pull_head_member_preflight<B>(
     emitter: Option<&EventEmitter<'_>>,
 ) -> ModelResult<PullHeadPlan>
 where
-    B: GitBackend,
+    B: GitBackend + GitPullUpdate,
 {
     let member = manifest
         .members
@@ -177,12 +177,11 @@ where
                         {
                             crate::git::GitMergeSimulation::Clean => {
                                 let prepared = backend
-                                    .prepare_merge_upstream_checked(
+                                    .prepare_pull_update_checked(
                                         &member_root,
                                         &branch,
                                         &source.expected_local,
                                         &source.source_commit,
-                                        None,
                                     )
                                     .map_err(|error| error.with_member(&member.id, &state.path))?;
                                 if !matches!(prepared, crate::git::GitPreparedMerge::Commit(_)) {
@@ -234,6 +233,16 @@ where
             }
         }
     };
+    // B2: the entries (untracked or ignored) this update would overwrite refuse here,
+    // before any participant is mutated. A true merge is judged against the merged tree
+    // it checks out, not the upstream.
+    refuse_update_collisions(
+        backend,
+        &member_root,
+        action.checkout_target(),
+        action.replay(),
+    )
+    .map_err(|error| error.with_member(&member.id, &state.path))?;
     if let Some(emitter) = emitter {
         emitter.member_finished(&member.id, &state.path);
     }
@@ -245,7 +254,7 @@ where
     })
 }
 
-fn prepare_pull_unchanged<B: GitBackend>(
+fn prepare_pull_unchanged<B: GitBackend + GitPullUpdate>(
     backend: &B,
     member_root: &Path,
     branch: &str,
@@ -254,12 +263,11 @@ fn prepare_pull_unchanged<B: GitBackend>(
     member_path: &str,
 ) -> ModelResult<crate::git::GitPreparedMerge> {
     let prepared = backend
-        .prepare_merge_upstream_checked(
+        .prepare_pull_update_checked(
             member_root,
             branch,
             &source.expected_local,
             &source.source_commit,
-            None,
         )
         .map_err(|error| error.with_member(member_id, member_path))?;
     if prepared != crate::git::GitPreparedMerge::Unchanged {
@@ -272,7 +280,7 @@ fn prepare_pull_unchanged<B: GitBackend>(
     Ok(prepared)
 }
 
-fn prepare_pull_fast_forward<B: GitBackend>(
+fn prepare_pull_fast_forward<B: GitBackend + GitPullUpdate>(
     backend: &B,
     member_root: &Path,
     branch: &str,
@@ -281,12 +289,11 @@ fn prepare_pull_fast_forward<B: GitBackend>(
     member_path: &str,
 ) -> ModelResult<crate::git::GitPreparedMerge> {
     let prepared = backend
-        .prepare_merge_upstream_checked(
+        .prepare_pull_update_checked(
             member_root,
             branch,
             &source.expected_local,
             &source.source_commit,
-            None,
         )
         .map_err(|error| error.with_member(member_id, member_path))?;
     if prepared != crate::git::GitPreparedMerge::FastForward {

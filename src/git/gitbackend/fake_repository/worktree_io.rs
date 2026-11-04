@@ -5,6 +5,8 @@
 
 use super::*;
 
+mod pull_update;
+
 pub(super) fn failed(message: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::GitCommandFailed, message)
 }

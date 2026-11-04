@@ -31,7 +31,9 @@ pub(super) fn fast_forward(
     let mut local_ref = repo.find_reference(&local_ref_name).map_err(git_error)?;
     let target_object = repo.find_object(target, None).map_err(git_error)?;
     let mut checkout = git2::build::CheckoutBuilder::new();
-    checkout.safe();
+    // Pull's rebase reaches this (`rebase_onto`): an ignored entry at a path the
+    // update writes is a conflict, not overwritten.
+    checkout.safe().overwrite_ignored(false);
     repo.checkout_tree(&target_object, Some(&mut checkout))
         .map_err(git_error)?;
     local_ref

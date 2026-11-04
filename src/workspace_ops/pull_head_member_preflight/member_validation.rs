@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::artifact::{LockArtifact, ManifestArtifact, ManifestMember, ResolvedMemberArtifact};
-use crate::git::GitBackend;
+use crate::git::{GitBackend, GitPullUpdate, refuse_collisions};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, par_map_per_host, resolve_jobs, resolve_per_host};
 
@@ -20,7 +20,7 @@ pub(crate) fn pull_head_preflight<B>(
     emitter: Option<&EventEmitter<'_>>,
 ) -> ModelResult<Vec<PullHeadPlan>>
 where
-    B: GitBackend + Sync,
+    B: GitBackend + GitPullUpdate + Sync,
 {
     let global = resolve_jobs(policy.and_then(|policy| policy.concurrency));
     let per_host = resolve_per_host(policy.and_then(|policy| policy.max_connections_per_host));
@@ -146,32 +146,63 @@ pub(crate) fn pull_branch(member: &ManifestMember, state: &ResolvedMemberArtifac
 }
 
 /// The sync-mode-aware dirty guard: fetch-only tolerates a dirty member (it never touches
-/// the worktree), reset is gated on the destructive policy, and the integrating modes refuse
-/// (matching porcelain git's "local changes would be overwritten").
+/// the worktree), reset is gated on the destructive policy for any dirt, untracked files
+/// included, and the integrating modes refuse uncommitted changes to tracked files
+/// (matching porcelain git's "local changes would be overwritten") with or without
+/// `--force`. Untracked files are judged against the update by `refuse_update_collisions`.
 pub(crate) fn pull_dirty_guard(
     sync: crate::SyncBehavior,
     status: &crate::git::GitStatus,
     policy: Option<&crate::OperationPolicy>,
     member_id: &str,
 ) -> ModelResult<()> {
-    if !status.is_dirty {
-        return Ok(());
-    }
     match sync {
         crate::SyncBehavior::FetchOnly => Ok(()),
-        crate::SyncBehavior::Reset
-            if policy.and_then(|policy| policy.destructive)
-                == Some(crate::DestructiveBehavior::Allow) =>
-        {
-            Ok(())
-        }
+        crate::SyncBehavior::Reset if !status.is_dirty || pull_force(policy) => Ok(()),
         crate::SyncBehavior::Reset => Err(ModelError::new(
             ErrorCode::DirtyMember,
             format!("member '{member_id}' has uncommitted changes; reset would discard them"),
         )),
+        _ if !status.has_tracked_changes() => Ok(()),
         _ => Err(ModelError::new(
             ErrorCode::DirtyMember,
             format!("member '{member_id}' has uncommitted changes"),
         )),
     }
+}
+
+fn pull_force(policy: Option<&crate::OperationPolicy>) -> bool {
+    policy.and_then(|policy| policy.destructive) == Some(crate::DestructiveBehavior::Allow)
+}
+
+/// The entries, untracked or ignored, that checking out `checkout` (a commit, or for a
+/// true merge the tree it checks out) and, for `--sync rebase`, replaying the local
+/// commits `replay` = (onto, local) would overwrite (B2): refused, naming them, so the
+/// user moves or deletes them and runs pull again. Pull deletes and overwrites none of
+/// them, with or without `--force`, and refuses the same way for anything else it cannot
+/// continue past. Run at plan time and at the barrier, before any participant is
+/// mutated, and once more just before a rebase (a race check). Callers attach the member
+/// or root context to the error.
+pub(crate) fn refuse_update_collisions<B>(
+    backend: &B,
+    path: &Path,
+    checkout: Option<&str>,
+    replay: Option<(&str, &str)>,
+) -> ModelResult<()>
+where
+    B: GitBackend + GitPullUpdate,
+{
+    if let Some(target) = checkout {
+        refuse_collisions(
+            &backend.update_collisions(path, target)?,
+            "would be overwritten by pull",
+        )?;
+    }
+    if let Some((onto, local)) = replay {
+        refuse_collisions(
+            &backend.replay_collisions(path, onto, local)?,
+            "are in the way of local commits that --sync rebase replays",
+        )?;
+    }
+    Ok(())
 }

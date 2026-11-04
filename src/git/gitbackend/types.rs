@@ -359,6 +359,12 @@ impl GitStatus {
     pub fn clean() -> Self {
         Self::default()
     }
+
+    /// Staged, unstaged or unresolved changes to tracked files. Untracked and
+    /// ignored entries do not count (`is_dirty` counts untracked ones).
+    pub fn has_tracked_changes(&self) -> bool {
+        self.staged > 0 || self.unstaged > 0 || self.unresolved > 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

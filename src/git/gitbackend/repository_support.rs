@@ -90,11 +90,35 @@ pub(crate) fn verify_merge_result(
     branch: &str,
     expected_commit: &str,
 ) -> ModelResult<()> {
+    verify_merge_result_with(
+        backend,
+        path,
+        branch,
+        expected_commit,
+        super::pull_update::WorktreeRule::RequireClean,
+    )
+}
+
+/// `verify_merge_result` under an explicit worktree rule: pull's update keeps
+/// untracked files, so only tracked changes count as drift there.
+pub(super) fn verify_merge_result_with(
+    backend: &impl GitBackend,
+    path: &Path,
+    branch: &str,
+    expected_commit: &str,
+    rule: super::pull_update::WorktreeRule,
+) -> ModelResult<()> {
     let observed = backend.head(path)?;
     let status = backend.status(path)?;
+    let dirty = match rule {
+        super::pull_update::WorktreeRule::RequireClean => {
+            status_dirty_outside_checked_artifact_private(&status)
+        }
+        super::pull_update::WorktreeRule::AllowUntracked => status.has_tracked_changes(),
+    };
     if observed.branch.as_deref() != Some(branch)
         || observed.commit.as_deref() != Some(expected_commit)
-        || status_dirty_outside_checked_artifact_private(&status)
+        || dirty
         || open_repo(path)?.state() != git2::RepositoryState::Clean
     {
         return Err(ModelError::new(

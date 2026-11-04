@@ -4,9 +4,10 @@ use super::merge_support::{
     signature_from_prepared, signature_matches_prepared, validate_checked_merge_head,
     validate_prepared_merge_upstream_in_repo,
 };
+use super::pull_update::WorktreeRule;
 use super::repository_support::{
     branch_ref_name, ensure_no_integration_in_progress, open_repo, resolve_commit_oid,
-    verify_merge_result,
+    verify_merge_result_with,
 };
 use super::*;
 
@@ -147,13 +148,36 @@ pub(super) fn prepare_merge_upstream_mode_checked(
     mode: GitPreparedMergeMode,
     attribution: Option<&crate::model::OperationAttribution>,
 ) -> ModelResult<GitPreparedMerge> {
+    prepare_merge_upstream_checked_with(
+        backend,
+        path,
+        branch,
+        expected_before,
+        source_commit,
+        mode,
+        attribution,
+        WorktreeRule::RequireClean,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_merge_upstream_checked_with(
+    backend: &Git2Backend,
+    path: &Path,
+    branch: &str,
+    expected_before: &str,
+    source_commit: &str,
+    mode: GitPreparedMergeMode,
+    attribution: Option<&crate::model::OperationAttribution>,
+    rule: WorktreeRule,
+) -> ModelResult<GitPreparedMerge> {
     record_preparation_call();
     let expected = git2::Oid::from_str(expected_before).map_err(git_error)?;
     let source = git2::Oid::from_str(source_commit).map_err(git_error)?;
     let repo = open_repo(path)?;
     ensure_no_integration_in_progress(&repo)?;
     let status = backend.status(path)?;
-    if status.is_dirty {
+    if rule.blocks(&status) {
         return Err(ModelError::new(
             ErrorCode::DirtyMember,
             "merge requires a clean index and worktree",
@@ -213,11 +237,31 @@ pub(super) fn validate_prepared_merge_upstream_state(
     source_commit: &str,
     prepared: &GitPreparedMerge,
 ) -> ModelResult<()> {
+    validate_prepared_merge_upstream_state_with(
+        backend,
+        path,
+        branch,
+        expected_before,
+        source_commit,
+        prepared,
+        WorktreeRule::RequireClean,
+    )
+}
+
+pub(super) fn validate_prepared_merge_upstream_state_with(
+    backend: &Git2Backend,
+    path: &Path,
+    branch: &str,
+    expected_before: &str,
+    source_commit: &str,
+    prepared: &GitPreparedMerge,
+    rule: WorktreeRule,
+) -> ModelResult<()> {
     let expected = git2::Oid::from_str(expected_before).map_err(git_error)?;
     let source = git2::Oid::from_str(source_commit).map_err(git_error)?;
     let repo = open_repo(path)?;
     validate_prepared_merge_upstream_in_repo(
-        backend, path, &repo, branch, expected, source, prepared,
+        backend, path, &repo, branch, expected, source, prepared, rule,
     )
     .map(|_| ())
 }
@@ -230,6 +274,29 @@ pub(super) fn execute_prepared_merge_upstream_checked(
     source_commit: &str,
     message: &str,
     prepared: &GitPreparedMerge,
+) -> ModelResult<GitIntegrateResult> {
+    execute_prepared_merge_upstream_checked_with(
+        backend,
+        path,
+        branch,
+        expected_before,
+        source_commit,
+        message,
+        prepared,
+        WorktreeRule::RequireClean,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_prepared_merge_upstream_checked_with(
+    backend: &Git2Backend,
+    path: &Path,
+    branch: &str,
+    expected_before: &str,
+    source_commit: &str,
+    message: &str,
+    prepared: &GitPreparedMerge,
+    rule: WorktreeRule,
 ) -> ModelResult<GitIntegrateResult> {
     run_before_prepared_execution();
     let expected = git2::Oid::from_str(expected_before).map_err(git_error)?;
@@ -249,27 +316,27 @@ pub(super) fn execute_prepared_merge_upstream_checked(
     transaction.lock_ref(&local_ref_name).map_err(git_error)?;
 
     let kind = validate_prepared_merge_upstream_in_repo(
-        backend, path, &repo, branch, expected, source, prepared,
+        backend, path, &repo, branch, expected, source, prepared, rule,
     )?;
     let source_object = repo.find_commit(source).map_err(git_error)?;
 
     if kind == GitMergeAnalysisKind::UpToDate {
         drop(source_object);
         drop(transaction);
-        verify_merge_result(backend, path, branch, &expected_text)?;
+        verify_merge_result_with(backend, path, branch, &expected_text, rule)?;
         return Ok(GitIntegrateResult::clean(expected_text));
     }
     if kind == GitMergeAnalysisKind::FastForward && prepared == &GitPreparedMerge::FastForward {
         let target_object = repo.find_object(source, None).map_err(git_error)?;
-        let mut checkout = git2::build::CheckoutBuilder::new();
-        checkout.safe();
-        repo.checkout_tree(&target_object, Some(&mut checkout))
+        let target_tree = target_object.peel_to_tree().map_err(git_error)?;
+        rule.before_checkout(&repo, path, &target_tree)?;
+        rule.checkout_tree(&repo, &target_object)
             .map_err(git_error)?;
         transaction
             .set_target(&local_ref_name, source, None, "gwz fast-forward")
             .map_err(git_error)?;
         transaction.commit().map_err(git_error)?;
-        verify_merge_result(backend, path, branch, &source_text)?;
+        verify_merge_result_with(backend, path, branch, &source_text, rule)?;
         return Ok(GitIntegrateResult::clean(source_text));
     }
 
@@ -309,6 +376,7 @@ pub(super) fn execute_prepared_merge_upstream_checked(
     };
     let tree_oid = git2::Oid::from_str(&prepared_commit.tree_oid).map_err(git_error)?;
     let tree = repo.find_tree(tree_oid).map_err(git_error)?;
+    rule.before_checkout(&repo, path, &tree)?;
     let head_commit = repo.find_commit(expected).map_err(git_error)?;
     let author = signature_from_prepared(&prepared_commit.author)?;
     let committer = signature_from_prepared(&prepared_commit.committer)?;
@@ -336,14 +404,14 @@ pub(super) fn execute_prepared_merge_upstream_checked(
             "post-merge commit metadata does not match the checked merge plan",
         ));
     }
-    repo.checkout_tree(tree.as_object(), None)
+    rule.checkout_tree(&repo, tree.as_object())
         .map_err(git_error)?;
     transaction
         .set_target(&local_ref_name, merge_oid, Some(&committer), "gwz merge")
         .map_err(git_error)?;
     transaction.commit().map_err(git_error)?;
     repo.cleanup_state().map_err(git_error)?;
-    verify_merge_result(backend, path, branch, &merge_oid.to_string())?;
+    verify_merge_result_with(backend, path, branch, &merge_oid.to_string(), rule)?;
     Ok(GitIntegrateResult::clean(merge_oid.to_string()))
 }
 
@@ -422,8 +490,15 @@ pub(super) fn rebase_onto(
     }
 
     let signature = merge_signature(&repo)?;
+    // The checkouts of the onto commit and of each replayed commit are safe and
+    // overwrite no ignored entry: libgit2 reports one at a path it writes as a
+    // conflict before it writes anything (pull has already refused every such entry).
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.safe().overwrite_ignored(false);
+    let mut options = git2::RebaseOptions::new();
+    options.checkout_options(checkout);
     let mut rebase = repo
-        .rebase(None, Some(&upstream_annotated), None, None)
+        .rebase(None, Some(&upstream_annotated), None, Some(&mut options))
         .map_err(git_error)?;
     // Replay each commit; git2 patches it into the index + worktree on `next()`. The
     // operation handle is dropped within the loop condition so the body can re-borrow.

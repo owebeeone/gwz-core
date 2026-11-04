@@ -182,6 +182,7 @@ fn reset_generated_conflict_to_target(
         .map_err(git_error)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn validate_prepared_merge_upstream_in_repo(
     backend: &impl GitBackend,
     path: &Path,
@@ -190,10 +191,11 @@ pub(super) fn validate_prepared_merge_upstream_in_repo(
     expected: git2::Oid,
     source: git2::Oid,
     prepared: &GitPreparedMerge,
+    rule: super::pull_update::WorktreeRule,
 ) -> ModelResult<GitMergeAnalysisKind> {
     ensure_no_integration_in_progress(repo)?;
     validate_checked_merge_head(repo, branch, expected)?;
-    if backend.status(path)?.is_dirty {
+    if rule.blocks(&backend.status(path)?) {
         return Err(ModelError::new(
             ErrorCode::DirtyMember,
             "merge requires a clean index and worktree",

@@ -1,10 +1,11 @@
 use std::path::Path;
 
 use crate::artifact::{ManifestMember, ResolvedMemberArtifact};
-use crate::git::{GitBackend, GitPreparedMerge};
+use crate::git::{GitBackend, GitPreparedMerge, GitPullUpdate};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 use super::protocol_state;
+use super::pull_head_member_preflight::refuse_update_collisions;
 
 pub(crate) const NO_FETCH_REMOTE_PULL_MESSAGE: &str = "no fetch remote configured; skipping pull";
 pub(crate) const FETCH_ONLY_PULL_MESSAGE: &str = "fetched; not integrated (fetch-only)";
@@ -69,6 +70,36 @@ impl PullHeadAction {
             | Self::Reset { .. } => None,
         }
     }
+
+    /// The commit, or for a true merge the merged tree, that the update checks out over
+    /// the worktree; `None` for the actions that check nothing out (reset has its own
+    /// rule).
+    pub(crate) fn checkout_target(&self) -> Option<&str> {
+        match self {
+            Self::Merge {
+                prepared: GitPreparedMerge::Commit(commit),
+                ..
+            } => Some(&commit.tree_oid),
+            Self::FastForward { source, .. }
+            | Self::Merge { source, .. }
+            | Self::Rebase { source } => Some(&source.source_commit),
+            Self::Noop
+            | Self::UpToDate { .. }
+            | Self::SkipNoFetchRemote
+            | Self::FetchOnly
+            | Self::PredictedConflict { .. }
+            | Self::Reset { .. } => None,
+        }
+    }
+
+    /// For a rebase, the commit it replays onto and the local commit whose history it
+    /// replays.
+    pub(crate) fn replay(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::Rebase { source } => Some((&source.source_commit, &source.expected_local)),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) struct PullHeadPlan {
@@ -130,9 +161,9 @@ fn execute_prepared_pull_merge<B>(
     prepared: &GitPreparedMerge,
 ) -> ModelResult<Vec<String>>
 where
-    B: GitBackend,
+    B: GitBackend + GitPullUpdate,
 {
-    let result = backend.execute_prepared_merge_upstream_checked(
+    let result = backend.execute_prepared_pull_update(
         member_root,
         branch,
         &source.expected_local,
@@ -152,14 +183,16 @@ where
 
 /// Execute a planned pull action against the materialized member, returning any
 /// conflicted paths (empty when clean or non-integrating). Merge/rebase conflicts are
-/// returned rather than errored so the worktree remains continue-able.
+/// returned rather than errored so the worktree remains continue-able. The update
+/// deletes and overwrites nothing of its own: it re-checks the entries in its way after
+/// its last validation, and its checkouts are safe and leave ignored entries alone.
 pub(crate) fn apply_pull_action<B>(
     backend: &B,
     member_root: &Path,
     plan: &PullHeadPlan,
 ) -> ModelResult<Vec<String>>
 where
-    B: GitBackend,
+    B: GitBackend + GitPullUpdate,
 {
     match &plan.action {
         PullHeadAction::Noop
@@ -175,9 +208,18 @@ where
         | PullHeadAction::Merge { source, prepared } => {
             execute_prepared_pull_merge(backend, member_root, &plan.branch, source, prepared)
         }
-        PullHeadAction::Rebase { source } => Ok(backend
-            .rebase_onto(member_root, &plan.branch, &source.source_commit)?
-            .conflicts),
+        PullHeadAction::Rebase { source } => {
+            // A rebase has no branch lock to re-check under: do it just before.
+            refuse_update_collisions(
+                backend,
+                member_root,
+                plan.action.checkout_target(),
+                plan.action.replay(),
+            )?;
+            Ok(backend
+                .rebase_onto(member_root, &plan.branch, &source.source_commit)?
+                .conflicts)
+        }
         PullHeadAction::Reset { source } => {
             backend.reset_hard(member_root, &plan.branch, &source.source_commit)?;
             Ok(Vec::new())

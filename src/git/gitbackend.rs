@@ -21,6 +21,7 @@ mod merge_support;
 mod preservation;
 mod preservation_image;
 mod preservation_root;
+mod pull_update;
 mod push_plan;
 mod recovery_support;
 mod refs;
@@ -42,6 +43,13 @@ pub use contract::*;
 pub use factory::make_repository;
 #[cfg(test)]
 pub(crate) use factory::make_repository;
+pub(crate) use pull_update::refuse_collisions;
+pub use pull_update::{GitPullUpdate, GitUpdateCollision};
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        pub(crate) use pull_update::GitPullUpdateSealed;
+    }
+}
 pub use transport_observations::TransportObservations;
 pub(crate) use transport_support::identity::has_options as has_transport_options;
 pub(crate) use transport_support::identity::{

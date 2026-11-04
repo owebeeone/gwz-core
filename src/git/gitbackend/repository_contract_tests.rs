@@ -515,3 +515,129 @@ fn fixture_tree_edits_mixed_reset_and_merge_conflict_match_native_semantics() {
         b"ours\n"
     );
 }
+
+// gwz 1.0.19 (pull and untracked files): both backends name exactly the entries an
+// update would overwrite -- a file at an added path, a file at a parent path of one, a
+// directory with untracked content at an added file's path, untracked content in a
+// tracked directory the update turns into a file -- leave an unrelated untracked file
+// alone, and delete none of them; the refusal built from them tells the user to move
+// or delete them and never mentions `--force`.
+#[test]
+fn pull_update_names_exactly_the_blocking_entries_and_removes_none() {
+    let world = crate::operation_context::TestWorld::selected();
+    let context = world.context();
+    let filesystem = context.filesystem();
+    let git = world.repository();
+    let root = fixture(filesystem, &git);
+    write(filesystem, &root.path.join("base.txt"), b"base\n");
+    filesystem
+        .create_directories(&root.path.join("conf"))
+        .unwrap();
+    write(filesystem, &root.path.join("conf/a.txt"), b"a\n");
+    git.stage_paths(&root.path, &["base.txt", "conf/a.txt"])
+        .unwrap();
+    let base = git.commit(&root.path, "base", false).unwrap().commit;
+    let incoming = |path: &str| TestCommitFileEdit {
+        path: path.into(),
+        bytes: Some(b"incoming\n".to_vec()),
+    };
+    let target = git
+        .test_create_commit_from_parent(
+            &root.path,
+            &base,
+            "target",
+            &[
+                incoming("new.txt"),
+                incoming("sub/inner.txt"),
+                incoming("blocked.txt"),
+                incoming("free.txt"),
+                TestCommitFileEdit {
+                    path: "conf/a.txt".into(),
+                    bytes: None,
+                },
+                incoming("conf"),
+            ],
+        )
+        .unwrap();
+    write(filesystem, &root.path.join("new.txt"), b"local\n");
+    write(
+        filesystem,
+        &root.path.join("sub"),
+        b"a file where a directory comes\n",
+    );
+    filesystem
+        .create_directories(&root.path.join("blocked.txt"))
+        .unwrap();
+    write(
+        filesystem,
+        &root.path.join("blocked.txt/mine.txt"),
+        b"mine\n",
+    );
+    write(filesystem, &root.path.join("conf/local.txt"), b"mine\n");
+    write(filesystem, &root.path.join("junk.txt"), b"junk\n");
+    let status = git.status(&root.path).unwrap();
+    assert!(!status.has_tracked_changes() && status.is_dirty);
+
+    let collisions = git.update_collisions(&root.path, &target).unwrap();
+    let paths = collisions
+        .iter()
+        .map(|collision| collision.path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, ["blocked.txt", "conf", "new.txt", "sub/inner.txt"]);
+    assert!(
+        collisions
+            .iter()
+            .all(|collision| collision.reason.is_none()),
+        "{collisions:?}"
+    );
+    assert_eq!(git.head(&root.path).unwrap().commit, Some(base.clone()));
+    assert!(exists(filesystem, &root.path.join("new.txt")));
+
+    // The refusal names every one, tells the user to move or delete them, and does not
+    // advise `--force`, which deletes none of them. The query removed nothing.
+    let refused =
+        crate::git::refuse_collisions(&collisions, "would be overwritten by pull").unwrap_err();
+    assert_eq!(refused.code, ErrorCode::DirtyMember, "{}", refused.message);
+    assert!(
+        refused.message.contains("move or delete") && !refused.message.contains("--force"),
+        "{}",
+        refused.message
+    );
+    for path in &paths {
+        assert!(
+            refused.message.contains(path.as_str()),
+            "{}",
+            refused.message
+        );
+    }
+    for kept in ["new.txt", "sub", "blocked.txt/mine.txt", "conf/local.txt"] {
+        assert!(exists(filesystem, &root.path.join(kept)), "{kept} removed");
+    }
+    assert_eq!(
+        filesystem.read(&root.path.join("conf/a.txt")).unwrap(),
+        b"a\n",
+        "a tracked file was removed"
+    );
+    assert_eq!(
+        filesystem.read(&root.path.join("junk.txt")).unwrap(),
+        b"junk\n"
+    );
+    // Once the user has deleted the colliding entries there is nothing left to refuse,
+    // and the query must still be a dry run: it writes none of the incoming files and
+    // leaves HEAD where it was.
+    for deleted in ["new.txt", "sub", "blocked.txt", "conf/local.txt"] {
+        filesystem.remove_tree(&root.path.join(deleted)).unwrap();
+    }
+    assert!(
+        git.update_collisions(&root.path, &target)
+            .unwrap()
+            .is_empty()
+    );
+    for incoming in ["free.txt", "new.txt", "sub", "blocked.txt"] {
+        assert!(
+            !exists(filesystem, &root.path.join(incoming)),
+            "the collision query wrote {incoming}"
+        );
+    }
+    assert_eq!(git.head(&root.path).unwrap().commit, Some(base.clone()));
+}

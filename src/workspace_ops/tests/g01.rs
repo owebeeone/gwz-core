@@ -10,6 +10,33 @@ pub(super) mod tracking_backend;
 
 use tracking_backend::{AnonymousTransfer, TEST_COMMIT, TrackingBackend};
 
+/// The transfer spy keeps the strict clean-worktree pull rule (the trait defaults); the
+/// trait is sealed, so only in-crate backends can take them.
+impl crate::git::GitPullUpdateSealed for TrackingBackend {}
+impl crate::git::GitPullUpdate for TrackingBackend {}
+
+/// gwz 1.0.19: the `GitPullUpdate` defaults are the strict rule, not a runtime failure.
+/// They report no collisions; the default prepare step (the clean-worktree merge
+/// pipeline) refuses any untracked file instead.
+#[test]
+fn pull_update_defaults_keep_the_strict_rule() {
+    use crate::git::GitPullUpdate;
+    let backend = TrackingBackend::new(1);
+    let repo = Path::new("/member");
+    assert!(
+        backend
+            .update_collisions(repo, TEST_COMMIT)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        backend
+            .replay_collisions(repo, TEST_COMMIT, TEST_COMMIT)
+            .unwrap()
+            .is_empty()
+    );
+}
+
 /// LCM1.0c: the test double observes the anonymous local ports the family
 /// transport adapter uses, so orchestration tests can assert exact
 /// transfers and inject a failure without a real repository.
