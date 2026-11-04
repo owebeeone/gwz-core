@@ -2804,6 +2804,27 @@ _CORE = schema(
     TransportLaneFrame=Msg(
         request_id=F(1, STR),
         envelope=F(2, Ref.Envelope)),
+
+    # The session limits a byte-stream client states in its SessionOpen
+    # (key 4), appended by step 2.3g2 of GwzServerCore-Step2.3-Plan.md
+    # (operator decision Q1 (a), 2026-11-03): the core session contract's §1
+    # limits in its table order, every key present and every value an
+    # unsigned integer (a negative value is refused), `close_wait_ms` in
+    # milliseconds. The host refuses an unknown key with invalid_request, and
+    # a socket host refuses a value above its own default; one at or below
+    # it goes on to open's validation. The handshake reads the body under
+    # its canonical rule (deterministic CBOR, keys ascending).
+    SessionLimits=Msg(
+        running_operations=F(1, INT),
+        queued_operations=F(2, INT),
+        operation_table=F(3, INT),
+        direct_workers=F(4, INT),
+        event_log=F(5, INT),
+        open_logs=F(6, INT),
+        outstanding_calls=F(7, INT),
+        control_reserve=F(8, INT),
+        read_bytes=F(9, INT),
+        close_wait_ms=F(10, INT)),
 )
 
 

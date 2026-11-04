@@ -217,6 +217,12 @@ from typing import Any
 # TransportCapabilitiesResponse.cancellation (tag 8); and GwzErrorCode 77 to 86
 # at the tail (SESSION_CODES). MEASURED additive, not assumed: removing exactly
 # those objects from the new IR reproduced the pin below exactly.
+# Step 2.3g2 (2026-11-04; gwz-dev dev-docs/GwzServerCore-Step2.3-Plan.md §3
+# "2.3g", operator decision Q1 (a)) appends exactly one message,
+# SessionLimits (the byte-stream SessionOpen's key 4: ten INT fields, tags 1
+# to 10). No existing message, field, slot, enum or method changed. MEASURED
+# additive, not assumed: removing exactly that one message from the new IR
+# reproduced the pin below exactly.
 PRE_LOG_WIRE_SHA256 = "4d377a496c8905293b5e9b53392b70867cf6dafccbb623841a623dbd2d555f14"
 LOG_METHODS = {"log", "log.output"}
 SESSION_METHODS = {"operation.response", "operation.cancel", "operation.release", "session.close"}
@@ -234,6 +240,8 @@ SESSION_MESSAGES = {
     "OperationReleaseResponse",
     "TransportLaneFrame",
 }
+# Step 2.3g2's handshake message (above), removed by name like step 2.2b's.
+SERVER_MESSAGES = {"SessionLimits"}
 # The codes the schema held before step 2.2b appended its own, whose last is
 # `capacity` (76): the tail the session codes must follow.
 PRE_SESSION_CODES = (
@@ -333,7 +341,11 @@ def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
     ]
     # Step 2.2b's session surface: whole new enums and messages, removed by
     # name after checking every one is there.
-    for kind, names in (("enums", SESSION_ENUMS), ("messages", SESSION_MESSAGES)):
+    for kind, names in (
+        ("enums", SESSION_ENUMS),
+        ("messages", SESSION_MESSAGES),
+        ("messages", SERVER_MESSAGES),
+    ):
         present = {item["name"] for item in projected[kind]} & names
         if present != names:
             raise ValueError(f"the schema must declare the session {kind} {sorted(names - present)}")

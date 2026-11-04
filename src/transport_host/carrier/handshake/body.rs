@@ -427,6 +427,26 @@ impl OpenRequest {
     }
 }
 
+/// The keys of `SessionLimits`, 1 to 10.
+pub(crate) const SESSION_LIMIT_KEYS: usize = 10;
+
+/// `SessionLimits`, the `SessionOpen`'s key 4 (the taut message of that name in `protocol/gwz.taut.py`; operator decision
+/// Q1 (a) of plan step 2.3g): the core session contract's §1 limits in its table order, `running_operations` (1),
+/// `queued_operations` (2), `operation_table` (3), `direct_workers` (4), `event_log` (5), `open_logs` (6),
+/// `outstanding_calls` (7), `control_reserve` (8), `read_bytes` (9) and `close_wait_ms` (10). Every key is present and
+/// every value an unsigned integer: a missing key, a key outside 1 to 10, a negative, null or other value, and a body
+/// that breaks the canonical rule are refused. The values come back by key, the value of key `k` at index `k - 1`; what
+/// they may be is the host's to judge.
+pub(crate) fn decode_session_limits(body: &[u8]) -> Result<[u64; SESSION_LIMIT_KEYS], BodyFault> {
+    const KEYS: [u64; SESSION_LIMIT_KEYS] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let fields = Fields::parse(body, &KEYS)?;
+    let mut values = [0; SESSION_LIMIT_KEYS];
+    for (value, key) in values.iter_mut().zip(KEYS) {
+        *value = fields.need(key, as_uint)?;
+    }
+    Ok(values)
+}
+
 /// The code and message of a `SessionError` for call ID 0, the refusal a host writes before `SessionOpened`.
 pub(crate) fn decode_refusal(body: &[u8]) -> Result<(u64, String), BodyFault> {
     let fields = Fields::parse(body, &[1, 2])?;
