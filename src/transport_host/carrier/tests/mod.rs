@@ -13,6 +13,8 @@ mod pre_open_rows;
 mod pressure_rows;
 mod sandbox_rows;
 mod seam_rows;
+mod server_files_fork_rows;
+mod server_files_rows;
 mod stream_rows;
 mod support;
 mod wire_rows;

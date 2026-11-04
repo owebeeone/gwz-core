@@ -469,17 +469,23 @@ pub(crate) fn created_pipe_dacl_sids(pipe: &PipeInstance) -> Vec<String> {
     }
 }
 
-/// The per-user directory does not exist on Windows: the pipe's name is random and its descriptor is the user's.
+/// The pipe's name is random and its descriptor is the user's, so a pipe needs no directory. The server's lock file
+/// and log need one (`server_files`): an explicit directory given to [`at`](Self::at); `for_current_user` has none yet.
 #[derive(Debug)]
-pub(crate) struct RuntimeDir;
+pub(crate) struct RuntimeDir(Option<std::path::PathBuf>);
 
 impl RuntimeDir {
     pub(crate) fn for_current_user(_: &super::RuntimeEnv) -> Result<Self, LocalRefusal> {
-        Ok(Self)
+        Ok(Self(None))
     }
 
-    pub(crate) fn at(_: &Path) -> Result<Self, LocalRefusal> {
-        Ok(Self)
+    /// An explicit directory for the server's files, checked when they are opened (`server_files`).
+    pub(crate) fn at(path: &Path) -> Result<Self, LocalRefusal> {
+        Ok(Self(Some(path.to_path_buf())))
+    }
+
+    pub(crate) fn path(&self) -> Option<&Path> {
+        self.0.as_deref()
     }
 }
 

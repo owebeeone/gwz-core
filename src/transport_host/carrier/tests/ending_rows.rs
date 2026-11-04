@@ -380,7 +380,7 @@ fn blocked_carrier(
     super::super::StreamCarrier,
     impl Read + Write + Send + 'static,
 ) {
-    let listener = LocalListener::bind(
+    let listener = crate::transport_host::carrier::tests::support::bind_listener(
         dir_runtime(dir),
         PeerPolicy::current_user().unwrap(),
         CarrierLimits::DEFAULT.with_stall(stall),
@@ -550,7 +550,7 @@ cfg_if::cfg_if! {
             no_progress: Duration::from_secs(120),
             close: Duration::from_millis(300),
         };
-        let listener = LocalListener::bind(
+        let listener = crate::transport_host::carrier::tests::support::bind_listener(
             dir_runtime(&dir),
             PeerPolicy::current_user().unwrap(),
             CarrierLimits::DEFAULT.with_stall(stall),

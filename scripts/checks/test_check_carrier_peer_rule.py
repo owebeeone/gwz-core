@@ -38,6 +38,18 @@ class PeerRuleTests(unittest.TestCase):
     def test_the_real_module_passes(self):
         self.assertEqual(checker.violations(checker.ROOT), [])
 
+    def test_a_path_into_the_operation_layer_fails(self):
+        for source in ['use crate::operation::{WorkspaceIdentity, workspace_identity};',
+                       'use super::super::super::operation::MemberLockManager;',
+                       'use crate::{model::X, operation::Y};']:
+            with self.subTest(source=source):
+                root = tree(**{'local/server_files/key.rs': source + '\n'})
+                self.assertTrue(any('operation layer' in line for line in checker.violations(root)), source)
+
+    def test_the_workspace_identity_leaf_is_allowed(self):
+        root = tree(**{'local/server_files/key.rs': 'use crate::workspace_identity::{WorkspaceIdentity, workspace_identity};\n'})
+        self.assertEqual(checker.violations(root), [])
+
     def test_environment_reads_fail(self):
         for source in ['let v = std::env::var("X");', 'let v = env::var_os("X");', 'let v = option_env!("X");']:
             with self.subTest(source=source):

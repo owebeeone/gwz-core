@@ -5,7 +5,8 @@
 //! | --- | --- |
 //! | One manager lives in the host context, so the sessions of one host context never update a member's refs at once | §5.1, §5.6; `GwzSplitCommandChannel.md` §1 |
 //! | A member is a workspace and a member id (`@root` for the root repository); different members never wait for each other | §5.1 |
-//! | **The workspace of the key is the root's filesystem identity**, `std::fs::canonicalize` of the root the caller resolved (on Windows the verbatim on-disk form), so a symlink, a case variant or a short name of one workspace is one key. A root that does not canonicalize refuses the step with that I/O error (`io_error`); the lexical spelling is never the key | §5.1 |
+//! | **The host manager keys a workspace by the root's filesystem identity** ([`workspace_identity`]: `(st_dev, st_ino)` on Unix, volume serial and 128-bit file ID (`FileIdInfo`) on Windows), the one the server's `id-<key>.lock` hashes too (step 2.3f; its `ws-<key>` names hash the canonical root path instead), so a symlink, a firmlink, a bind mount, a case variant or a short name of one workspace is one key. A root without an identity refuses the step with that I/O error (`io_error`); the host manager never keys by the spelling | §5.1; 2.3c round 2 State R2S-1, Code P3-N1 |
+//! | **The per-call manager** ([`BoundMemberLocks::per_call`]) serves one call, whose every step passes one spelling of the root, so it keys by that spelling and never refuses a root whose identity cannot be read: direct CLI and gwz-py calls behave as before 2.3c | 2.3c round 2 Code P3-N4 |
 //! | `lock` blocks until the member is free: it waits, it never refuses | §5.1 |
 //! | A wait in progress wakes when the call's token is cancelled, and refuses with `cancelled`; a token already cancelled refuses before any wait | §5.1 "a gate crossing", §5.3 |
 //! | A panic while holding a guard releases the member (the guard drops as it unwinds), and a lock poisoned by a panic is recovered, so one panic fails no later operation | §5.1 |
@@ -26,12 +27,47 @@ use gwz_session_host::CancellationToken;
 
 use super::{MemberMutationGuard, MemberSteps};
 use crate::model::{ErrorCode, ModelError, ModelResult};
+use crate::workspace_identity::{WorkspaceIdentity, workspace_identity};
+
+/// How a manager names a workspace.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum WorkspaceKey {
+    /// The host manager's key: the filesystem's identity of the root, not the way a request spelled it.
+    Identity(WorkspaceIdentity),
+    /// The per-call manager's key: the call's own spelling of its root.
+    Spelling(PathBuf),
+}
+
+/// How a manager keys the workspaces it is given.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Keying {
+    /// By [`workspace_identity`], refusing a root without one: the host context's manager, shared by sessions.
+    #[default]
+    Identity,
+    /// By the spelling: a manager of one call's own.
+    Spelling,
+}
+
+impl Keying {
+    fn key(self, workspace: &Path) -> ModelResult<WorkspaceKey> {
+        match self {
+            Keying::Identity => workspace_identity(workspace)
+                .map(WorkspaceKey::Identity)
+                .map_err(|error| {
+                    ModelError::new(
+                        ErrorCode::IoError,
+                        format!("{} does not resolve: {error}", workspace.display()),
+                    )
+                }),
+            Keying::Spelling => Ok(WorkspaceKey::Spelling(workspace.to_path_buf())),
+        }
+    }
+}
 
 /// One member of one workspace.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct MemberKey {
-    /// The workspace root as the filesystem names it (`std::fs::canonicalize`), not as a request spelled it.
-    workspace: PathBuf,
+    workspace: WorkspaceKey,
     member: String,
 }
 
@@ -71,23 +107,26 @@ impl Shared {
 #[derive(Clone, Default)]
 pub(crate) struct MemberLockManager {
     shared: Arc<Shared>,
+    keying: Keying,
 }
 
 impl MemberLockManager {
-    /// A manager with nothing held.
+    /// A manager with nothing held, keying workspaces by their filesystem identity.
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Blocks until `member` of the workspace at `workspace` is free and holds it until the guard drops. The
-    /// workspace is keyed by its canonical path, so every spelling of one root is one workspace.
+    /// Blocks until `member` of the workspace at `workspace` is free and holds it until the guard drops. The host
+    /// manager keys the workspace by its filesystem identity, so every spelling of one root is one workspace; a
+    /// per-call manager keys it by the spelling.
     ///
     /// With a `cancel` token it refuses with `cancelled` when the token is cancelled before the call or while it
     /// waits, and a member it was waiting for stays with whoever holds it. Without one it waits as long as it takes.
     ///
     /// # Errors
     ///
-    /// `cancelled` as above, and `io_error` when `workspace` does not canonicalize (nothing is held then).
+    /// `cancelled` as above, and `io_error` when the host manager cannot read `workspace`'s identity (nothing is
+    /// held then).
     pub(crate) fn lock(
         &self,
         workspace: &Path,
@@ -104,12 +143,7 @@ impl MemberLockManager {
             None => None,
         };
         let key = MemberKey {
-            workspace: std::fs::canonicalize(workspace).map_err(|error| {
-                ModelError::new(
-                    ErrorCode::IoError,
-                    format!("{} does not resolve: {error}", workspace.display()),
-                )
-            })?,
+            workspace: self.keying.key(workspace)?,
             member: member.to_owned(),
         };
         let mut state = self.shared.state();
@@ -166,10 +200,14 @@ impl BoundMemberLocks {
         }
     }
 
-    /// A manager of one call's own, for a handler its caller runs outside a session.
+    /// A manager of one call's own, for a handler its caller runs outside a session. It keys the root by the call's
+    /// spelling (2.3c round 2 Code P3-N4).
     pub(crate) fn per_call() -> Self {
         Self {
-            manager: MemberLockManager::new(),
+            manager: MemberLockManager {
+                shared: Arc::default(),
+                keying: Keying::Spelling,
+            },
             cancel: None,
         }
     }

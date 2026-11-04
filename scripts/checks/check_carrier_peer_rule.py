@@ -27,7 +27,10 @@ test-only or configurable override:
   macOS probe) is listed like the probes', and nothing else is;
 - the hold's order (unix.rs `check_peer`): the probe is followed by the consuming confirmation, `hold.confirm(`, which
   unix.rs must call, and `check_peer` calls no `.check(` (the non-consuming test of a hold, which a probe could follow
-  and which would let the confirmation be dropped without a compile error).
+  and which would let the confirmation be dropped without a compile error);
+- a path into the operation layer (`crate::operation`, `super::...::operation`, or `operation` in a `crate::{..}`
+  group): the carrier depends on no higher layer, so step 2.6 can extract it into a crate (2.3f round 1 Code P3-2; the
+  workspace identity both use is the crate-root leaf `workspace_identity`).
 
 A token scan, like its siblings: conservative, not name resolution. Comments and string literals are not scanned.
 Run with no arguments from anywhere; `--root DIR` points it at another gwz-core checkout (the unit tests do).
@@ -65,6 +68,11 @@ PLATFORM_CFG_FILES = {
     # probe (any other Unix is a compile error there). Neither may switch on anything else.
     'local/address/mod.rs': ['unix', 'windows'],
     'local/address/walk_unix.rs': ['any(target_os = "linux", target_os = "android")', 'target_vendor = "apple"'],
+    # Plan 2.3f: the listener files' Unix (openat, flock, the stale socket) and Windows (reparse points, LockFileEx) arms.
+    'local/server_files/lock.rs': ['unix', 'windows'],
+    'local/server_files/mod.rs': ['unix', 'windows'],
+    'local/server_files/record.rs': ['unix', 'windows'],
+    'local/server_files/stale.rs': ['unix', 'windows'],
 }
 # Calls a file must make, so that a probe or the rule cannot be dropped by an edit: (pattern, spelling, why).
 REQUIRED_CALLS = {
@@ -78,6 +86,8 @@ REQUIRED_CALLS = {
 }
 # A call `check_peer` (unix.rs) must not make: the hold's non-consuming test, `hold.check(fd)`.
 HOLD_CHECK = re.compile(r'(?:\.|::)\s*check\s*\(')
+# A path into the operation layer, which the carrier must not depend on.
+UPWARD = re.compile(r'\b(?:crate|super)\s*::\s*(?:super\s*::\s*)*operation\b|\bcrate\s*::\s*\{[^}]*\boperation\b')
 
 
 def strip(source: str) -> str:
@@ -187,6 +197,10 @@ def violations(root: Path) -> list[str]:
             if switch not in allowed:
                 line = text.count('\n', 0, match.start()) + 1
                 found.append(f'{rel}:{line}: a conditional-compilation switch cfg({switch}) the rule does not list')
+        for match in UPWARD.finditer(text):
+            line = text.count('\n', 0, match.start()) + 1
+            found.append(f'{rel}:{line}: depends on the operation layer ({" ".join(match.group(0).split())}); the carrier '
+                         'depends on no higher layer')
         for pattern, spelling, why in REQUIRED_CALLS.get(rel, []):
             if not re.search(pattern, text):
                 found.append(f'{rel}: never calls {spelling}; {why}')

@@ -1,13 +1,14 @@
 //! Other spellings of one existing directory, for the rows that prove a key is the filesystem's identity of a path
 //! and not the way a request wrote it.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// `path` spelled with the case of its last component swapped, when the volume it is on treats that spelling as the
 /// same directory (Windows, default macOS APFS), and `None` with the reason when it does not (a case-sensitive
 /// volume, or a last component without letters). The two spellings are checked by what the filesystem says, not
-/// assumed from the platform.
+/// assumed from the platform: sameness is the filesystem identity (`crate::workspace_identity::workspace_identity`), never
+/// `canonicalize`, which keeps the spelling on a case-folding Linux volume and would make the row skip there (2.3c round
+/// 2 State R2S-1, Code P3-N1).
 pub(crate) fn case_variant(path: &Path) -> Result<PathBuf, String> {
     let name = path
         .file_name()
@@ -27,7 +28,8 @@ pub(crate) fn case_variant(path: &Path) -> Result<PathBuf, String> {
         return Err(format!("{name} has no letters to change the case of"));
     }
     let variant = path.with_file_name(swapped);
-    match (fs::canonicalize(&variant), fs::canonicalize(path)) {
+    let identity = crate::workspace_identity::workspace_identity;
+    match (identity(&variant), identity(path)) {
         (Ok(spelled), Ok(real)) if spelled == real => Ok(variant),
         _ => Err(format!(
             "the volume of {} is case-sensitive: {} is not the same directory",

@@ -19,8 +19,9 @@
 //! this module, `transport_host/runtime_env.rs`, so that no code under `carrier/` reads the environment.
 //!
 //! **The path-length rule** (Unix). A socket address is a path in a fixed-size field (`sun_path`: 104 bytes on macOS,
-//! 108 on Linux, each counting the NUL). The directory path plus `/` plus the socket's name (`s-` and 16 hex digits,
-//! 18 bytes) must fit in the field less the NUL: 103 bytes on macOS, 107 on Linux. A longer path is refused with
+//! 108 on Linux, each counting the NUL). The directory path plus `/` plus the socket's name (`ws-` and 16 hex digits,
+//! 19 bytes, the workspace's server key: `server_files`) must fit in the field less the NUL: 103 bytes on macOS, 107 on
+//! Linux. A longer path is refused with
 //! [`LocalRefusal::AddressTooLong`] before anything is created; it is never truncated and no shorter alias is made.
 //!
 //! **The peer check** runs on both sides, before either side sends a byte: the listener reads the client's
@@ -53,6 +54,7 @@ use std::{
 pub(crate) mod address;
 mod peer;
 pub(crate) mod sandbox;
+pub(crate) mod server_files;
 
 use std::ffi::OsString;
 

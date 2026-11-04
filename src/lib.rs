@@ -84,6 +84,9 @@ cfg_if::cfg_if! {
 // halves as F-3's redefined seam floor.
 mod verified_write;
 pub mod workspace;
+// Step 2.3f: the filesystem identity of a workspace root, a leaf that the member lock (`operation`) and the local
+// carrier's listener files both use (2.3f round 1 Code P3-2: the carrier depends on no higher layer).
+mod workspace_identity;
 pub mod workspace_ops;
 
 pub use cbor::{Cbor, encode, try_decode};

@@ -247,7 +247,7 @@ fn refusing() -> [(SandboxFindings, Cause, &'static str); 2] {
 fn a_listener_that_refuses_answers_one_session_error_and_ends_the_stream() {
     for (findings, cause, text) in refusing() {
         let dir = dir();
-        let strict = LocalListener::bind(
+        let strict = crate::transport_host::carrier::tests::support::bind_listener(
             dir_runtime(&dir),
             policy_with(findings),
             CarrierLimits::DEFAULT,

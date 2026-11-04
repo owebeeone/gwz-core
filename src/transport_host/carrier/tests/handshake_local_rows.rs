@@ -552,7 +552,7 @@ fn a_listener_that_sends_two_bytes_and_goes_silent_is_reported_with_them() {
 fn a_listener_that_refused_this_peer_is_reported_as_the_refusal_with_its_cause() {
     let dir = dir();
     // A listener for another user: it refuses this process, answers it with one SessionError, and closes.
-    let strict = LocalListener::bind(
+    let strict = crate::transport_host::carrier::tests::support::bind_listener(
         dir_runtime(&dir),
         other_user_policy(),
         CarrierLimits::DEFAULT,

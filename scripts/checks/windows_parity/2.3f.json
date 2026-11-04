@@ -1,0 +1,323 @@
+{
+ "done": false,
+ "entries": [
+  {
+   "path": "src/transport_host/carrier/local/server_files/lock.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: use super::super::DirectoryFault",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, the file rule and the lock on Linux and macOS (openat on the directory's descriptor, O_NOFOLLOW, fstat owner and mode, flock); the sibling `windows` arm of the same cfg_if holds the Windows rule (FILE_FLAG_OPEN_REPARSE_POINT, the owner SID, LockFileEx past the record)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/server_files/lock.rs",
+   "kind": "os",
+   "gate": "libc::dev_t",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, the file rule and the lock on Linux and macOS (openat on the directory's descriptor, O_NOFOLLOW, fstat owner and mode, flock); the sibling `windows` arm of the same cfg_if holds the Windows rule (FILE_FLAG_OPEN_REPARSE_POINT, the owner SID, LockFileEx past the record)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/server_files/lock.rs",
+   "kind": "os",
+   "gate": "libc::geteuid",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, the file rule and the lock on Linux and macOS (openat on the directory's descriptor, O_NOFOLLOW, fstat owner and mode, flock); the sibling `windows` arm of the same cfg_if holds the Windows rule (FILE_FLAG_OPEN_REPARSE_POINT, the owner SID, LockFileEx past the record)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/server_files/lock.rs",
+   "kind": "os",
+   "gate": "libc::ino_t",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, the file rule and the lock on Linux and macOS (openat on the directory's descriptor, O_NOFOLLOW, fstat owner and mode, flock); the sibling `windows` arm of the same cfg_if holds the Windows rule (FILE_FLAG_OPEN_REPARSE_POINT, the owner SID, LockFileEx past the record)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/server_files/lock.rs",
+   "kind": "os",
+   "gate": "os::fd::{AsFd, OwnedFd}",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, the file rule and the lock on Linux and macOS (openat on the directory's descriptor, O_NOFOLLOW, fstat owner and mode, flock); the sibling `windows` arm of the same cfg_if holds the Windows rule (FILE_FLAG_OPEN_REPARSE_POINT, the owner SID, LockFileEx past the record)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/server_files/mod.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: fn files_path",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, the Unix bind order (record, then the socket at ws-<key>) and the stale-socket call; the sibling `windows` arm creates the pipe and then records it"
+  },
+  {
+   "path": "src/transport_host/carrier/local/server_files/record.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: fn path_bytes",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, a Unix path recorded as its bytes; the sibling `windows` arm records a Windows path as UTF-8"
+  },
+  {
+   "path": "src/transport_host/carrier/local/server_files/record.rs",
+   "kind": "os",
+   "gate": "os::unix::ffi::OsStrExt",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, a Unix path recorded as its bytes; the sibling `windows` arm records a Windows path as UTF-8"
+  },
+  {
+   "path": "src/transport_host/carrier/local/server_files/record.rs",
+   "kind": "os",
+   "gate": "os::unix::ffi::OsStringExt",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, a Unix path recorded as its bytes; the sibling `windows` arm records a Windows path as UTF-8"
+  },
+  {
+   "path": "src/transport_host/carrier/local/server_files/stale.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: use super::super::unix::{connect_until, peer_of, socket_path}",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, the three-part stale-socket test and the socket-and-lock link check; the sibling `windows` arm checks the lock files (workspace and identity) by volume serial and 128-bit file ID (FileIdInfo) (a pipe leaves nothing behind); difference recorded (round 2 State N-3): on Windows any refusal of the file rule when the lock is reopened by name, a second hard link included, reads as the lock lost, where Unix compares only the inode"
+  },
+  {
+   "path": "src/transport_host/carrier/local/server_files/stale.rs",
+   "kind": "os",
+   "gate": "libc::ECONNREFUSED",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, the three-part stale-socket test and the socket-and-lock link check; the sibling `windows` arm checks the lock files (workspace and identity) by volume serial and 128-bit file ID (FileIdInfo) (a pipe leaves nothing behind); difference recorded (round 2 State N-3): on Windows any refusal of the file rule when the lock is reopened by name, a second hard link included, reads as the lock lost, where Unix compares only the inode"
+  },
+  {
+   "path": "src/transport_host/carrier/local/server_files/stale.rs",
+   "kind": "os",
+   "gate": "os::fd::AsRawFd",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, the three-part stale-socket test and the socket-and-lock link check; the sibling `windows` arm checks the lock files (workspace and identity) by volume serial and 128-bit file ID (FileIdInfo) (a pipe leaves nothing behind); difference recorded (round 2 State N-3): on Windows any refusal of the file rule when the lock is reopened by name, a second hard link included, reads as the lock lost, where Unix compares only the inode"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_rows.rs",
+   "kind": "gate",
+   "gate": "target_vendor = \"apple\"",
+   "target": "arm: fn a_firmlink_spelling_of_the_root_has_another_name_and_finds_the_running_server",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f rows: the socket, FIFO, symlink and mode rows on Linux and macOS, the firmlink row on macOS (another name, one server through the identity lock); the sibling `windows` arms hold the reparse-point, pipe-record and junction-key rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: macro assert!",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f rows: the socket, FIFO, symlink and mode rows on Linux and macOS, the firmlink key row on macOS; the sibling `windows` arms hold the reparse-point, pipe-record and junction-key rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: stmt server.address().path(",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f rows: the socket, FIFO, symlink and mode rows on Linux and macOS, the firmlink key row on macOS; the sibling `windows` arms hold the reparse-point, pipe-record and junction-key rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: stmt std::fs::set_permissions(files.",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f rows: the socket, FIFO, symlink and mode rows on Linux and macOS, the firmlink key row on macOS; the sibling `windows` arms hold the reparse-point, pipe-record and junction-key rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: use super::super::local::LocalListener",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f rows: the socket, FIFO, symlink and mode rows on Linux and macOS, the firmlink key row on macOS; the sibling `windows` arms hold the reparse-point, pipe-record and junction-key rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: stmt std::fs::set_permissions(path,",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "round 1 (State S-1): the private file a hard link at the lock or the log would reach, mode 0600 on Linux and macOS; the sibling `else` arm keeps the inherited ACL on Windows, where the same hard-link row runs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_rows.rs",
+   "kind": "os",
+   "gate": "libc::mkfifo",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f rows: the socket, FIFO, symlink and mode rows on Linux and macOS, the firmlink key row on macOS; the sibling `windows` arms hold the reparse-point, pipe-record and junction-key rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::fs::PermissionsExt::from_mode",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f rows: the socket, FIFO, symlink and mode rows on Linux and macOS, the firmlink key row on macOS; the sibling `windows` arms hold the reparse-point, pipe-record and junction-key rows",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::fs::symlink",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f rows: the socket, FIFO, symlink and mode rows on Linux and macOS, the firmlink key row on macOS; the sibling `windows` arms hold the reparse-point, pipe-record and junction-key rows",
+   "count": 5
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::{fs::PermissionsExt, net::UnixListener}",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f rows: the socket, FIFO, symlink and mode rows on Linux and macOS, the firmlink key row on macOS; the sibling `windows` arms hold the reparse-point, pipe-record and junction-key rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/support.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: use super::super::local::LocalRefusal",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3f, the rows' listener under a random ws-<16 hex> name (Unix); the sibling arm binds the Windows pipe"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_fork_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: use std::process::{Command, Stdio}",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "paired",
+   "appendix": "round 3 (F18): rows that release a lock or a listening socket and use it again run in a process of their own on Linux and macOS (a child forked by another test thread holds a copy of the descriptor until its exec); the sibling `else` arm of `run` runs the body in place on Windows, where the lock files' handles are not inherited"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_fork_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: use super::server_files_rows::fixture",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "platform",
+   "reason": "the rows that hold a forked child in its fork-to-exec window (fork, pre_exec, close, flock) exist only where a child inherits descriptors by default; Windows handles of the lock files are not inheritable, and the isolation of the other rows is the sibling `else` arm of `run`",
+   "appendix": "round 3 (F18); round 4 rewrites the probe as two rows with a guard",
+   "approved_platform": "2.3f round 3 remediation (finding F18, build-targets/tools/findings-2026-10-31.md) and round 4 (RemPlan-4), accepted by the 2.3f State reviews rounds 4 and 5 and recorded in the 2.3f commit message: the fork-to-exec rows exist only where a child inherits descriptors by default"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_fork_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::process::CommandExt",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "platform",
+   "reason": "the rows that hold a forked child in its fork-to-exec window (fork, pre_exec, close, flock) exist only where a child inherits descriptors by default; Windows handles of the lock files are not inheritable, and the isolation of the other rows is the sibling `else` arm of `run`",
+   "appendix": "round 3 (F18); round 4 rewrites the probe as two rows with a guard",
+   "approved_platform": "2.3f round 3 remediation (finding F18, build-targets/tools/findings-2026-10-31.md) and round 4 (RemPlan-4), accepted by the 2.3f State reviews rounds 4 and 5 and recorded in the 2.3f commit message: the fork-to-exec rows exist only where a child inherits descriptors by default"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_fork_rows.rs",
+   "kind": "os",
+   "gate": "libc::close",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "platform",
+   "reason": "the rows that hold a forked child in its fork-to-exec window (fork, pre_exec, close, flock) exist only where a child inherits descriptors by default; Windows handles of the lock files are not inheritable, and the isolation of the other rows is the sibling `else` arm of `run`",
+   "appendix": "round 4 (F18): the child's pre_exec hook closes its own copy of the release pipe's write end",
+   "approved_platform": "2.3f round 3 remediation (finding F18, build-targets/tools/findings-2026-10-31.md) and round 4 (RemPlan-4), accepted by the 2.3f State reviews rounds 4 and 5 and recorded in the 2.3f commit message: the fork-to-exec rows exist only where a child inherits descriptors by default"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_fork_rows.rs",
+   "kind": "os",
+   "gate": "os::fd::AsRawFd",
+   "target": "",
+   "owner": [
+    "2.3f"
+   ],
+   "state": "platform",
+   "reason": "the rows that hold a forked child in its fork-to-exec window (fork, pre_exec, close, flock) exist only where a child inherits descriptors by default; Windows handles of the lock files are not inheritable, and the isolation of the other rows is the sibling `else` arm of `run`",
+   "appendix": "round 4 (F18): the release pipe's write end by raw descriptor, for the child's close",
+   "approved_platform": "2.3f round 3 remediation (finding F18, build-targets/tools/findings-2026-10-31.md) and round 4 (RemPlan-4), accepted by the 2.3f State reviews rounds 4 and 5 and recorded in the 2.3f commit message: the fork-to-exec rows exist only where a child inherits descriptors by default"
+  }
+ ]
+}

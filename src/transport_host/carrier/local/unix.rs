@@ -26,16 +26,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Bytes of a socket's file name: `s-` and 16 hex digits.
-pub(crate) const SOCKET_NAME_BYTES: usize = 18;
+/// Bytes of a socket's file name: `ws-` and 16 hex digits (`server_files::ServerKey`).
+pub(crate) const SOCKET_NAME_BYTES: usize = 19;
 /// Bytes of the address field, and so of the path including its NUL.
 const SUN_PATH_LEN: usize =
     mem::size_of::<libc::sockaddr_un>() - mem::offset_of!(libc::sockaddr_un, sun_path);
 /// The longest socket path: the field less the NUL.
 pub(crate) const SUN_PATH_MAX: usize = SUN_PATH_LEN - 1;
-
-/// How many times `bind` draws a new name when the one drawn exists.
-const NAME_DRAWS: usize = 3;
 
 fn euid() -> u32 {
     // SAFETY: `geteuid` has no preconditions and cannot fail.
@@ -622,38 +619,49 @@ pub(crate) struct LocalListener {
     address: LocalAddress,
     policy: PeerPolicy,
     limits: CarrierLimits,
+    /// The socket file's `(st_dev, st_ino)` as bound: what `Drop` removes, and nothing else.
+    bound: (u64, u64),
 }
 
 impl LocalListener {
-    /// Listens on a new socket with a random name in `dir`. Nothing is created if the path would not fit.
-    pub(crate) fn bind(
-        dir: &RuntimeDir,
+    /// Listens on a new socket named `name` in the directory `dir` (the server's `ws-<key>`, `server_files`). Nothing
+    /// is created if the path would not fit; an entry already at the name is not replaced (`NameTaken`).
+    pub(crate) fn bind_at(
+        dir: &Path,
+        name: &str,
         policy: PeerPolicy,
         limits: CarrierLimits,
     ) -> Result<Self, LocalRefusal> {
-        check_directory(dir.path())?;
-        for _ in 0..NAME_DRAWS {
-            let mut random = [0u8; 8];
-            getrandom::fill(&mut random)
-                .map_err(|_| LocalRefusal::os("getrandom", &io::Error::other("no random bytes")))?;
-            let name = format!("s-{:016x}", u64::from_le_bytes(random));
-            let path = socket_path(dir.path(), &name)?;
-            match UnixListener::bind(&path) {
-                Ok(listener) => {
-                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                        .map_err(|error| LocalRefusal::os("chmod", &error))?;
-                    return Ok(Self {
-                        listener,
-                        address: LocalAddress(path),
-                        policy,
-                        limits,
-                    });
-                }
-                Err(error) if error.kind() == io::ErrorKind::AddrInUse => {}
-                Err(error) => return Err(LocalRefusal::os("bind", &error)),
+        check_directory(dir)?;
+        let path = socket_path(dir, name)?;
+        let listener = UnixListener::bind(&path).map_err(|error| match error.kind() {
+            io::ErrorKind::AddrInUse => LocalRefusal::NameTaken,
+            _ => LocalRefusal::os("bind", &error),
+        })?;
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(error) => {
+                // The socket was just bound in the checked directory, so it is this listener's; without its identity
+                // `Drop` could not remove it, and a socket left with no record would refuse every later start
+                // (2.3f round 1 State S-4).
+                drop(listener);
+                let _ = std::fs::remove_file(&path);
+                return Err(LocalRefusal::os("lstat", &error));
             }
-        }
-        Err(LocalRefusal::NameTaken)
+        };
+        let listener = Self {
+            listener,
+            address: LocalAddress(path),
+            policy,
+            limits,
+            bound: (meta.dev(), meta.ino()),
+        };
+        std::fs::set_permissions(
+            listener.address.path(),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .map_err(|error| LocalRefusal::os("chmod", &error))?;
+        Ok(listener)
     }
 
     pub(crate) fn address(&self) -> &LocalAddress {
@@ -684,8 +692,14 @@ impl AsRawFd for LocalListener {
 }
 
 impl Drop for LocalListener {
+    /// Removes the socket file while it is still the one bound: a file another server bound at the name since is left.
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(self.address.path());
+        let path = self.address.path();
+        if let Ok(meta) = std::fs::symlink_metadata(path)
+            && (meta.dev(), meta.ino()) == self.bound
+        {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 

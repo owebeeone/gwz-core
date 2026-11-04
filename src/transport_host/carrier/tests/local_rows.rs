@@ -68,7 +68,7 @@ pub(super) fn dir_runtime(dir: &Dir) -> &RuntimeDir {
 }
 
 pub(super) fn listener(dir: &Dir) -> LocalListener {
-    LocalListener::bind(
+    crate::transport_host::carrier::tests::support::bind_listener(
         &dir.runtime,
         PeerPolicy::current_user().unwrap(),
         CarrierLimits::DEFAULT,
@@ -231,8 +231,12 @@ fn a_squatted_listener_owned_by_another_principal_receives_zero_bytes() {
 #[test]
 fn an_other_user_client_is_refused_at_accept_and_gets_nothing() {
     let dir = dir();
-    let strict =
-        LocalListener::bind(&dir.runtime, other_user_policy(), CarrierLimits::DEFAULT).unwrap();
+    let strict = crate::transport_host::carrier::tests::support::bind_listener(
+        &dir.runtime,
+        other_user_policy(),
+        CarrierLimits::DEFAULT,
+    )
+    .unwrap();
     let address = strict.address().clone();
     let accepting = thread::spawn(move || accepted(&strict));
     // The client's own check of the listener passes (the listener is this user); the listener's check of the client
@@ -486,8 +490,12 @@ mod unix {
     fn a_refused_client_that_trickles_bytes_holds_the_accept_thread_for_one_second_at_most() {
         use std::{io::Write, os::unix::net::UnixStream, time::Instant};
         let dir = dir();
-        let strict =
-            LocalListener::bind(&dir.runtime, other_user_policy(), CarrierLimits::DEFAULT).unwrap();
+        let strict = crate::transport_host::carrier::tests::support::bind_listener(
+            &dir.runtime,
+            other_user_policy(),
+            CarrierLimits::DEFAULT,
+        )
+        .unwrap();
         let address = strict.address().clone();
         // A refused peer that sends one byte every 100 ms for four seconds: each read succeeds, so only a bound on
         // time ends the drain before the peer does.
@@ -614,7 +622,7 @@ mod unix {
             address.sun_path.len()
         };
         assert_eq!(SUN_PATH_MAX, sun - 1);
-        let name = "s-0123456789abcdef";
+        let name = "ws-0123456789abcdef";
         assert_eq!(name.len(), SOCKET_NAME_BYTES);
         let fits = "/".to_string() + &"d".repeat(SUN_PATH_MAX - 1 - SOCKET_NAME_BYTES - 1);
         let path = socket_path(Path::new(&fits), name).unwrap();
@@ -639,7 +647,7 @@ mod unix {
             std::fs::set_permissions(&deep, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let runtime = RuntimeDir::at(&deep).unwrap();
-        let refused = LocalListener::bind(
+        let refused = crate::transport_host::carrier::tests::support::bind_listener(
             &runtime,
             PeerPolicy::current_user().unwrap(),
             CarrierLimits::DEFAULT,

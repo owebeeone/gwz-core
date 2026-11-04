@@ -7,13 +7,12 @@ use gwz_session_contract::Tag;
 use gwz_session_host::Ending;
 
 use super::session_rows::{
-    Admit, Host, Raw, call_frame, call_id_of, dir, fetch_call, hello, meta, send,
+    Admit, Host, Raw, call_frame, call_id_of, dir, fetch_call, hello, listen, meta, send,
 };
 use crate::server::session::SessionPolicy;
 use crate::session_host::served::stream::ServeFault;
 use crate::transport_host::carrier::{
-    CarrierLimits, CloseCode, CloseReason, StreamCarrier,
-    local::{LocalListener, PeerPolicy},
+    CarrierLimits, CloseCode, CloseReason, StreamCarrier, local::PeerPolicy,
 };
 
 /// F3/P3-1: a handler that panics is logged once, as panicked, with how long it ran: an operation's and a direct
@@ -61,12 +60,11 @@ fn a_panicking_handler_is_logged_once_as_panicked_with_its_duration() {
 fn an_ungated_carrier_is_refused_before_the_hello() {
     let host = Host::new(SessionPolicy::new(hello()));
     let ungated_dir = dir();
-    let listener = LocalListener::bind(
-        &ungated_dir.runtime,
+    let listener = listen(
+        &ungated_dir,
         PeerPolicy::current_user().unwrap(),
         CarrierLimits::DEFAULT,
-    )
-    .expect("bind");
+    );
     let (served, first) = thread::scope(|scope| {
         let server = scope.spawn(|| {
             let carrier: Arc<StreamCarrier> = Arc::new(listener.accept().expect("accepted"));

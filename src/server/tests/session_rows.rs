@@ -253,6 +253,19 @@ pub(super) fn dir() -> Dir {
     }
 }
 
+/// The rows' listener in `dir`. On Linux and macOS a socket under a fixed name of the server's form (`ws-` and 16 hex
+/// digits, as `local::server_files` names it; each row has a directory of its own), on Windows a pipe under its random
+/// name.
+pub(super) fn listen(dir: &Dir, policy: PeerPolicy, limits: CarrierLimits) -> LocalListener {
+    cfg_if::cfg_if! {
+        if #[cfg(unix)] {
+            LocalListener::bind_at(dir.runtime.path(), "ws-0000000000000001", policy, limits).expect("bind")
+        } else {
+            LocalListener::bind(&dir.runtime, policy, limits).expect("bind")
+        }
+    }
+}
+
 pub(super) fn meta(root: &Path, request_id: &str) -> crate::RequestMeta {
     crate::RequestMeta {
         request_id: request_id.to_owned(),
@@ -300,9 +313,7 @@ impl Host {
     pub(super) fn new(policy: SessionPolicy) -> Self {
         let dir = dir();
         let limits = policy.carrier_limits().expect("carrier limits");
-        let listener =
-            LocalListener::bind(&dir.runtime, PeerPolicy::current_user().unwrap(), limits)
-                .expect("bind");
+        let listener = listen(&dir, PeerPolicy::current_user().unwrap(), limits);
         let (workspace, root) = workspace();
         Self {
             policy,

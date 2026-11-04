@@ -144,6 +144,33 @@ cfg_if::cfg_if! {
     }
 }
 
+cfg_if::cfg_if! {
+    if #[cfg(target_vendor = "apple")] {
+        /// Red row (step 2.3f; 2.3c round 2 State R2S-1 = Code P3-N1): the firmlink spelling of a root on the Data
+        /// volume (`/System/Volumes/Data/private/tmp/...` for `/private/tmp/...`) is one directory, which
+        /// `canonicalize` leaves as two strings; the key is the filesystem identity, so its lock of the same member waits.
+        #[test]
+        fn a_firmlink_spelling_of_one_workspace_is_one_key_and_waits() {
+            let temp = tempfile::Builder::new()
+                .prefix("gwz-memberlock-firmlink")
+                .tempdir_in("/private/tmp")
+                .expect("a directory on the Data volume");
+            let root = temp.path().join("ws");
+            std::fs::create_dir(&root).unwrap();
+            let firmlink = Path::new("/System/Volumes/Data").join(root.strip_prefix("/").unwrap());
+            assert!(firmlink.is_dir(), "{} should be the firmlink spelling", firmlink.display());
+            let manager = MemberLockManager::new();
+            let holder = manager.lock(&root, "mem_01", None).expect("the first lock");
+            let (second, thread) = lock_on_a_thread(&manager, &firmlink, "mem_01", None);
+            assert_waiting(&manager, 1, &[&second]);
+            drop(holder);
+            assert_eq!(second.recv_timeout(LONG), Ok(Ok(())));
+            thread.join().unwrap();
+            assert_eq!(manager.held_count(), 0);
+        }
+    }
+}
+
 /// Red row (S-1, remediation round 1): a case variant of the root is the same workspace on a volume that folds case
 /// (Windows, macOS APFS), so its lock of the same member waits. On a case-sensitive volume the variant is another
 /// directory, and the row says so and does not run.
@@ -356,4 +383,28 @@ fn a_handler_port_without_a_token_waits_and_with_one_is_cancellable() {
     let per_call = BoundMemberLocks::per_call();
     drop(per_call.enter(&root, "@root").unwrap());
     drop(per_call.enter(&root, "mem_01").unwrap());
+}
+
+/// Red row (step 2.3f; 2.3c round 2 Code P3-N4): the per-call manager serves one call, whose every step passes one
+/// spelling of the root, so it keys by that spelling and never refuses a root whose identity cannot be read; the host
+/// manager, shared by sessions, keeps refusing such a root with `io_error`.
+#[test]
+fn a_per_call_step_on_a_root_without_an_identity_succeeds_and_the_host_manager_refuses_it() {
+    let (temp, _root) = workspace("memberlock");
+    let missing = temp.path().join("never-created");
+    let per_call = BoundMemberLocks::per_call();
+    drop(
+        per_call
+            .enter(&missing, "@root")
+            .expect("a direct caller's step"),
+    );
+    drop(
+        per_call
+            .enter(&missing, "mem_01")
+            .expect("a direct caller's next step"),
+    );
+    let (_controls, cancel) = token();
+    let host = BoundMemberLocks::new(MemberLockManager::new(), cancel);
+    let refused = host.enter(&missing, "@root").map(drop).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::IoError);
 }

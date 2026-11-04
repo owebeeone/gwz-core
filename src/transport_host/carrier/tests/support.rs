@@ -341,3 +341,30 @@ pub(super) fn undecodable_envelope(session: &str) -> Vec<u8> {
     });
     gwz_transport::cbor::encode(&message.to_cbor())
 }
+
+/// The rows' listener in `dir`: on Linux and macOS a socket under a random name of the server's form (`ws-` and 16 hex
+/// digits; the server's own name is its workspace's key, `local::server_files`), on Windows a pipe under its random name.
+pub(crate) fn bind_listener(
+    dir: &super::super::local::RuntimeDir,
+    policy: super::super::local::PeerPolicy,
+    limits: CarrierLimits,
+) -> Result<super::super::local::LocalListener, super::super::local::LocalRefusal> {
+    use super::super::local::LocalListener;
+    cfg_if::cfg_if! {
+        if #[cfg(unix)] {
+            use super::super::local::LocalRefusal;
+            for _ in 0..3 {
+                let mut random = [0u8; 8];
+                getrandom::fill(&mut random).expect("random bytes");
+                let name = format!("ws-{:016x}", u64::from_le_bytes(random));
+                match LocalListener::bind_at(dir.path(), &name, policy.clone(), limits) {
+                    Err(LocalRefusal::NameTaken) => {}
+                    other => return other,
+                }
+            }
+            Err(LocalRefusal::NameTaken)
+        } else {
+            LocalListener::bind(dir, policy, limits)
+        }
+    }
+}
