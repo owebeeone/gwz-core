@@ -97,10 +97,6 @@ impl NeedKey {
 }
 
 /// How a connection-bound need was learned (draft 3.1).
-#[allow(
-    dead_code,
-    reason = "the connection-bound learning of HTTPS model draft r5 sub-step H3a records it, which removes this"
-)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Evidence {
     /// The logon session answered the key's challenge (G8, RA1).
@@ -118,10 +114,6 @@ struct Held {
 
 enum Need {
     Basic(Arc<Held>),
-    #[allow(
-        dead_code,
-        reason = "the connection-bound learning of HTTPS model draft r5 sub-step H3a records it, which removes this"
-    )]
     ConnectionBound {
         observed: u64,
         evidence: Evidence,
@@ -137,14 +129,7 @@ enum Need {
 pub(crate) enum Recorded {
     Unrecorded,
     Basic(SecretHeader),
-    #[allow(
-        dead_code,
-        reason = "the re-authentication of HTTPS model draft r5 sub-step H3b reads them, which removes this"
-    )]
-    ConnectionBound {
-        observed: u64,
-        evidence: Evidence,
-    },
+    ConnectionBound { observed: u64, evidence: Evidence },
     Rejected,
     Unretained,
     Tombstone,
@@ -376,12 +361,9 @@ impl Needs {
         table.set(key, Need::Basic(held))
     }
     /// Records a connection-bound need (G2, G8, RA1): `Challenged` replaces any state but `Rejected` and an equal
-    /// earlier insert; `OnBound` is stored only for a key with no entry. An `Exhausted` record stores nothing and
-    /// gives the budget code, as does a full key table for a new key.
-    #[allow(
-        dead_code,
-        reason = "the connection-bound learning of HTTPS model draft r5 sub-step H3a records it, which removes this"
-    )]
+    /// earlier insert; `OnBound` is stored only for a key with no entry. An `Exhausted` record stores nothing: for
+    /// `OnBound` that is no error, as the advertisement is served and records nothing (X4, G2); for `Challenged` it is
+    /// the budget code (X4, G8), as is a full key table for a new key and the call that finds the lock poisoned (X1).
     pub(crate) fn bound(
         &self,
         key: &NeedKey,
@@ -389,8 +371,14 @@ impl Needs {
         evidence: Evidence,
     ) -> Result<(), ErrorCode> {
         let (mut table, poisoned) = self.table();
-        if poisoned || table.mac.is_none() {
+        if poisoned {
             return Err(ErrorCode::Capacity);
+        }
+        if table.mac.is_none() {
+            return match evidence {
+                Evidence::OnBound => Ok(()),
+                Evidence::Challenged => Err(ErrorCode::Capacity),
+            };
         }
         let need = Need::ConnectionBound { observed, evidence };
         match (table.find(key), evidence) {
@@ -411,8 +399,32 @@ impl Needs {
             (Some(_), Evidence::OnBound) => Ok(()),
         }
     }
+    /// The advertisement of a connection-bound `key` was `length` bytes long: the entry keeps the longest seen, which
+    /// bounds the body of the key's re-authentication (draft 3.1, condition 4). Any other entry is unchanged.
+    pub(crate) fn observe(&self, key: &NeedKey, length: u64) {
+        let (mut table, _) = self.table();
+        if let Some(index) = table.find(key)
+            && let Need::ConnectionBound { observed, .. } = &mut table.entries[index].1
+        {
+            *observed = (*observed).max(length);
+        }
+    }
+    /// The logon session's answer for `key` was refused (G9), or a connection-bound key's re-authentication or POST
+    /// was (RA2, RA3, RA4, P6): `key` alone becomes `Rejected`, and no credential or fingerprint is touched. The
+    /// result is the code the exchange ends with.
+    pub(crate) fn refuse(&self, key: &NeedKey) -> ErrorCode {
+        let (mut table, poisoned) = self.table();
+        if poisoned {
+            return ErrorCode::Capacity;
+        }
+        match table.set(key, Need::Rejected) {
+            Ok(()) => ErrorCode::Authentication,
+            Err(code) => code,
+        }
+    }
     /// A 401 (not a 407) to a request of `key` that carried a credential, `fresh` when a fresh lookup's, else the
-    /// record's own; with none (a logon-session answer) only the key is rejected. Every entry of the origin holding
+    /// record's own (P2); when the record holds none for `key`, only the key is rejected (a refused logon session is
+    /// [`Self::refuse`]'s, which never touches a credential). Every entry of the origin holding
     /// that credential becomes `Rejected` at once and its bytes are wiped; its fingerprint is kept, and one past the
     /// bound makes the record `Exhausted`. The result is the code the exchange ends with.
     pub(crate) fn reject(&self, key: &NeedKey, fresh: Option<&Secret>) -> ErrorCode {

@@ -28,6 +28,16 @@
 //!   of the record's bounds (contract section 10) an advertisement ends with the budget code (`Capacity`, which the
 //!   client's stream reads as `QuotaExceeded`) before any byte of its body, and a key the record could not keep sends
 //!   no POST; an `Exhausted` record answers no challenge and starts no lookup.
+//! - Connection-bound keys (draft r5 section 3.1): NTLM and Negotiate authenticate the connection, so an advertisement
+//!   the logon session answered (`Challenged`), or served unchallenged on a connection the logon session had
+//!   authenticated (`OnBound`), records its key connection-bound, with no credential, and the exchange says its
+//!   connection is bound (`ExchangeIo::connection_bound`): the binding then prefers that connection for the key's next
+//!   exchange. A POST of such a key on any other connection first re-authenticates it with the key's own advertisement
+//!   GET, answered only by the operation's logon session and drained before the POST's first byte; a re-authentication
+//!   that does not authenticate the connection ends the exchange before any POST byte, except that a key learned
+//!   `OnBound` and served unchallenged again goes as an unrecorded key's. Re-authentications are counted in the
+//!   [`Counters`] the factory gives every adapter. An exchange's `Effect` is its own request's: `Possible` once that
+//!   request is handed to Hyper (contract 9, A7).
 //!   The native route **fails closed**
 //!   (contract 7.3, step 1.3a): when the composition's `ProcessSafety` is unavailable, or the caller's gate gave its
 //!   supervisor no window, it refuses before any credential is read or token sent.
@@ -62,7 +72,10 @@ use gwz_transport::{
 use std::{
     collections::BTreeMap,
     io,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     task::{Context, Poll},
     thread::{self, JoinHandle},
 };
@@ -89,15 +102,51 @@ pub(crate) struct HttpsSettings {
 }
 
 /// What an HTTPS adapter is made from: the endpoint's TLS and proxy configuration, the host's helper slots (whose
-/// launches hold the host's spawn gate) and the host's shared reservation, which its SSH adapters share. It holds no
-/// credential helper, environment, token or native caller: those are the operation's own, in the `AuthContext` that
-/// `start_exchange` carries (contract section 7).
+/// launches hold the host's spawn gate), the host's shared reservation, which its SSH adapters share, and the counters
+/// its factory gives every adapter it builds. It holds no credential helper, environment, token or native caller:
+/// those are the operation's own, in the `AuthContext` that `start_exchange` carries (contract section 7).
 #[derive(Clone)]
 pub(crate) struct HttpsInputs {
     pub(crate) tls: https_connection::Config,
     pub(crate) helper_slots: HelperSlots,
     pub(crate) authority: Authority,
     pub(crate) settings: HttpsSettings,
+    pub(crate) counters: Counters,
+}
+
+/// The HTTPS adapters' counters (HTTPS model draft r5 3.1, Counter): one shared saturating count of the
+/// re-authentications of connection-bound keys, which the composition's factory owns and gives every adapter it
+/// builds, so that it does not grow with instance turnover. A clone counts into the same total; no adapter keeps a
+/// count of its own. How it reaches `TransportObservation` is the 3.1/3.4 composition's (draft U5).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Counters {
+    reauthentications: Arc<AtomicU64>,
+}
+impl Counters {
+    /// One more re-authentication; the count saturates.
+    pub(super) fn reauthenticated(&self) {
+        let _ =
+            self.reauthentications
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                    Some(count.saturating_add(1))
+                });
+    }
+    /// The re-authentications every adapter sharing this counter has made.
+    #[allow(
+        dead_code,
+        reason = "read by the plan 3.4 sweep through the 3.1 composition (HTTPS model draft r5 U5); the rows read it now"
+    )]
+    pub(crate) fn reauthentications(&self) -> u64 {
+        self.reauthentications.load(Ordering::Relaxed)
+    }
+    cfg_if::cfg_if! {
+        if #[cfg(test)] {
+            /// Whether `self` and `other` count into one total.
+            pub(crate) fn shares(&self, other: &Self) -> bool {
+                Arc::ptr_eq(&self.reauthentications, &other.reauthentications)
+            }
+        }
+    }
 }
 
 /// Which authentication bound a connection's exchanges (contract 7.2), in the order a connection's record rises
@@ -221,6 +270,7 @@ pub(crate) struct HttpsAdapter {
     running: bool,
     shared: Arc<Shared>,
     scopes: Scopes,
+    counters: Counters,
     dispose_sent: bool,
 }
 impl HttpsAdapter {
@@ -230,6 +280,7 @@ impl HttpsAdapter {
         let (commands, receiver) = mpsc::unbounded_channel();
         let scopes = Scopes::default();
         let records = scopes.clone();
+        let counters = inputs.counters.clone();
         let start: Start = Box::new(move |receiver, shared| {
             thread::Builder::new()
                 .name("gwz-https-adapter".into())
@@ -241,8 +292,17 @@ impl HttpsAdapter {
             running: false,
             shared: Arc::default(),
             scopes,
+            counters,
             dispose_sent: false,
         }
+    }
+    /// The counters this adapter counts into, which its factory's other adapters share (draft r5 3.1, Counter).
+    #[allow(
+        dead_code,
+        reason = "read by the plan 3.4 sweep through the 3.1 composition (HTTPS model draft r5 U5); the rows read it now"
+    )]
+    pub(crate) fn counters(&self) -> Counters {
+        self.counters.clone()
     }
     /// The adapter's scope records, which its own `authorize_reuse` reads.
     #[allow(dead_code, reason = "the rows read the records through the adapter")]

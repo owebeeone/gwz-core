@@ -418,6 +418,9 @@ impl Drop for Authenticated {
 
 cfg_if::cfg_if! { if #[cfg(test)] {
     pub(crate) fn publication_fixture() -> NativeCaller { tests::publication_caller() }
+    /// `publication_fixture`, and the switch that, once set, stalls every later round of its logon session, so that a
+    /// conversation runs into its deadline D (HTTPS model draft r5 row H3c-4).
+    pub(crate) fn stalling_fixture() -> (NativeCaller, Arc<std::sync::atomic::AtomicBool>) { tests::stalling_caller() }
     /// A caller whose logon session never completes, for a server reached by `host`, and the count of the steps
     /// every session of it has taken.
     pub(crate) fn counting_fixture(host: &'static str) -> (NativeCaller, Arc<AtomicUsize>) { tests::counting_caller(host) }

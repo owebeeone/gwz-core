@@ -117,6 +117,7 @@ pub(super) fn run(
             helper_slots,
             authority,
             settings,
+            counters,
         } = inputs;
         let epoch = Instant::now();
         let connector = HttpConnector::new(
@@ -135,6 +136,7 @@ pub(super) fn run(
                 safety,
                 retained: NativeRetained::default(),
                 cancel: CancellationToken::new(),
+                counters,
             }),
             shared: shared.clone(),
             scopes,

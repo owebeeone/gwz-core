@@ -453,6 +453,7 @@ cfg_if::cfg_if! {
         mod domain_ports_tests;
         mod factory_profile_tests;
         mod https_auth_tests;
+        mod https_bound_tests;
         mod https_needs_tests;
         mod https_tests;
         mod sleep_poll_tests;

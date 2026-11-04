@@ -10,7 +10,7 @@ use super::{
 use crate::{
     git::endpoint::{
         cut_proxy::CutProxy,
-        https_adapter::{Binding, HttpsAdapter, HttpsInputs, HttpsSettings, Scopes},
+        https_adapter::{Binding, Counters, HttpsAdapter, HttpsInputs, HttpsSettings, Scopes},
         https_auth::{self, HelperSlots},
         https_fixture::{Behaviour, ConnectionId as Served, Handler, Server, response},
         https_worker::native::NativeCaller,
@@ -44,7 +44,7 @@ use std::{
 
 pub(super) const ADVERTISEMENT: &[u8] = b"001e# service=git-upload-pack\n0000";
 
-fn settings() -> HttpsSettings {
+pub(super) fn settings() -> HttpsSettings {
     HttpsSettings {
         allocation_timeout_ms: 20_000,
         connect_timeout_ms: 20_000,
@@ -53,19 +53,42 @@ fn settings() -> HttpsSettings {
         cleanup_timeout_ms: 2_000,
     }
 }
-fn inputs(server: &Server) -> HttpsInputs {
+fn inputs(server: &Server, parts: &Parts) -> HttpsInputs {
     HttpsInputs {
         tls: server.config(),
         helper_slots: HelperSlots::new(),
         authority: Authority::new(256, 256),
-        settings: settings(),
+        settings: parts.settings,
+        counters: Counters::default(),
     }
 }
 
-/// Makes the production adapter shape over `inputs`, keeping each adapter's scope records.
+/// What a row's adapter is made with beyond the fixture server's configuration: its budgets and a wrapper around the
+/// production adapter shape, through which a row observes the adapter's ports.
+#[derive(Clone)]
+pub(super) struct Parts {
+    pub(super) settings: HttpsSettings,
+    pub(super) wrap: Option<Wrap>,
+}
+impl Default for Parts {
+    fn default() -> Self {
+        Self {
+            settings: settings(),
+            wrap: None,
+        }
+    }
+}
+/// Wraps the adapter the factory made.
+pub(super) type Wrap =
+    Arc<dyn Fn(Box<dyn EndpointAdapter>) -> Box<dyn EndpointAdapter> + Send + Sync>;
+
+/// Makes the production adapter shape over `inputs`, keeping each adapter's scope records and counters. Its inputs
+/// hold one set of counters, which every adapter it makes shares, as the production factory's do.
 struct Factory {
     inputs: HttpsInputs,
     scopes: Arc<Mutex<Vec<Scopes>>>,
+    counters: Arc<Mutex<Vec<Counters>>>,
+    wrap: Option<Wrap>,
 }
 impl EndpointFactory for Factory {
     fn create(
@@ -75,7 +98,12 @@ impl EndpointFactory for Factory {
     ) -> Result<Box<dyn EndpointAdapter>, FactoryError> {
         let adapter = HttpsAdapter::new(self.inputs.clone(), env.safety().clone());
         self.scopes.lock().unwrap().push(adapter.scopes());
-        Ok(Box::new(SchemeRouter::new(None, Some(adapter))))
+        self.counters.lock().unwrap().push(adapter.counters());
+        let adapter: Box<dyn EndpointAdapter> = Box::new(SchemeRouter::new(None, Some(adapter)));
+        Ok(match &self.wrap {
+            Some(wrap) => wrap(adapter),
+            None => adapter,
+        })
     }
 }
 
@@ -133,6 +161,7 @@ pub(super) struct Case {
     proxy: CutProxy,
     pub(super) seen: Seen,
     scopes: Arc<Mutex<Vec<Scopes>>>,
+    counters: Arc<Mutex<Vec<Counters>>>,
     host: Mutex<ConnectionHost>,
     pub(super) handle: HostHandle,
     /// The helper `Case::operation` gives its operations (their own, in their contexts: the instance holds none).
@@ -154,6 +183,16 @@ impl Case {
         routes: impl FnOnce(&std::path::Path) -> (Option<https_auth::Config>, Option<NativeCaller>),
         safety: Option<SharedProcessSafety>,
     ) -> Self {
+        Self::with_parts(handler, behaviour, routes, safety, Parts::default())
+    }
+    /// `with`, the adapter made from `parts`.
+    pub(super) fn with_parts(
+        handler: impl FnOnce(&Seen) -> Handler,
+        behaviour: Behaviour,
+        routes: impl FnOnce(&std::path::Path) -> (Option<https_auth::Config>, Option<NativeCaller>),
+        safety: Option<SharedProcessSafety>,
+        parts: Parts,
+    ) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -166,10 +205,12 @@ impl Case {
         let (helper, native) = routes(directory.path());
         // The helper fixture's files stay for the case's life.
         std::mem::forget(directory);
-        let scopes = Arc::default();
+        let (scopes, counters) = (Arc::default(), Arc::default());
         let factory = Factory {
-            inputs: inputs(&server),
+            inputs: inputs(&server, &parts),
             scopes: Arc::clone(&scopes),
+            counters: Arc::clone(&counters),
+            wrap: parts.wrap,
         };
         let safety = safety
             .unwrap_or_else(|| Arc::new(crate::transport_host::composition::process_safety()));
@@ -181,6 +222,7 @@ impl Case {
             proxy,
             seen,
             scopes,
+            counters,
             host: Mutex::new(host),
             handle,
             helper,
@@ -202,7 +244,7 @@ impl Case {
     fn spec_for(&self, through: bool, service: GitService) -> ExchangeSpec {
         self.spec_at(through, service, "/repo")
     }
-    fn spec_at(&self, through: bool, service: GitService, path: &str) -> ExchangeSpec {
+    pub(super) fn spec_at(&self, through: bool, service: GitService, path: &str) -> ExchangeSpec {
         let port = if through {
             self.proxy.port
         } else {
@@ -215,6 +257,10 @@ impl Case {
             path,
         )
         .unwrap()
+    }
+    /// The pool key of the exchanges `exchange_at` opens (through the proxy).
+    pub(super) fn key(&self) -> Key {
+        Key::https("localhost", self.proxy.port)
     }
     /// An exchange of `service` at the repository `path` through the proxy.
     pub(super) fn exchange_at(
@@ -255,6 +301,10 @@ impl Case {
         let scopes = self.scopes.lock().unwrap();
         assert_eq!(scopes.len(), 1, "one endpoint instance");
         scopes[0].all()
+    }
+    /// Each adapter's counters, in the order the factory made them.
+    pub(super) fn counters(&self) -> Vec<Counters> {
+        self.counters.lock().unwrap().clone()
     }
     pub(super) fn accepted(&self) -> usize {
         self.server.connections.load(Ordering::SeqCst)

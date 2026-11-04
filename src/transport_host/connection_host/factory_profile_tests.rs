@@ -284,3 +284,38 @@ fn a_profile_without_inputs_is_refused_unavailable() {
     assert_eq!(handle.snapshot().endpoint_instances, 0, "nothing was made");
     assert!(block_on(host.close()));
 }
+
+#[test]
+fn the_factory_gives_every_https_adapter_it_builds_its_one_counter() {
+    // HTTPS model draft r5 3.1, Counter (R4w3 Code P3-3 (c)): the production factory owns one re-authentication counter
+    // and builds every HTTPS adapter's inputs with it, for instances of different profiles alike, so that the count does
+    // not grow with instance turnover.
+    let dir = tempfile::tempdir().unwrap();
+    let ca = dir.path().join("ca.pem");
+    std::fs::write(
+        &ca,
+        super::super::https_tests::unrelated_ca(dir.path(), "r4w3-counter-ca"),
+    )
+    .unwrap();
+    let factory = CoreFactory::new(None, Some(https_host()));
+    let first = capture(&[("HOME", dir.path().as_os_str())]);
+    let second = capture(&[
+        ("HOME", dir.path().as_os_str()),
+        ("SSL_CERT_FILE", ca.as_os_str()),
+    ]);
+    assert!(!first.profile.same_as(&second.profile), "two profiles");
+    let one = factory.https_inputs(https_host(), &first.inputs);
+    let other = factory.https_inputs(https_host(), &second.inputs);
+    assert!(
+        one.counters.shares(&other.counters),
+        "two adapters of one factory count apart"
+    );
+    let another = CoreFactory::new(None, Some(https_host()));
+    assert!(
+        !another
+            .https_inputs(https_host(), &first.inputs)
+            .counters
+            .shares(&one.counters),
+        "two factories share a counter"
+    );
+}

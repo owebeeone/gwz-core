@@ -129,6 +129,58 @@ impl Client {
         result
     }
 }
+impl Client {
+    /// TR1.6 OQ4 (d): whether `credential`, which a request redirected after the challenge carried, also answers
+    /// `destination` on the same origin. When it does, the redirected request resends it, and the route's later
+    /// requests there (the POST to the repository discovery found) are answered with it, with no lookup. It does not
+    /// when the server has refused it already (draft r5 3(d): `Rejected` is terminal, so it is sent nowhere again), nor
+    /// when `destination` holds another answer (another credential, or a failed lookup), which it keeps: the redirected
+    /// request then goes with nothing, and only its own 401 decides. One discovery reaches at most six destinations,
+    /// as for a lookup.
+    pub(super) async fn resend(
+        &self,
+        key: &RouteKey,
+        destination: &Destination,
+        credential: &Arc<Credential>,
+        budget: &mut Budget,
+        cancel: &CancellationToken,
+    ) -> Result<bool, Failure> {
+        if credential.rejected.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let cell = self
+            .routes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .answers(key)
+            .map_err(failure)?;
+        let facts = Facts {
+            method: AuthMethod::Gh,
+            ..Default::default()
+        };
+        let started = Instant::now();
+        let lock = tokio::select! {
+            _ = cancel.cancelled() => return Err(failure(ErrorCode::Cancelled)),
+            lock = tokio::time::timeout_at(started + budget.allocation, cell.lock()) => lock,
+        };
+        budget.allocation = budget.allocation.saturating_sub(started.elapsed());
+        let mut answers = lock.map_err(|_| with_facts(ErrorCode::Timeout, Effect::None, &facts))?;
+        if let Some(answer) = answers.get(&destination.base()) {
+            return Ok(answer
+                .as_ref()
+                .is_ok_and(|answer| Arc::ptr_eq(answer, credential)));
+        }
+        if answers.len() >= 6 {
+            return Err(with_facts(
+                ErrorCode::UnsupportedOperation,
+                Effect::None,
+                &facts,
+            ));
+        }
+        answers.insert(destination.base(), Ok(credential.clone()));
+        Ok(true)
+    }
+}
 impl Credential {
     pub(super) fn header(&self) -> https_auth::SecretHeader {
         self.secret.header()

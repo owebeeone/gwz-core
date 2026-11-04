@@ -3,18 +3,25 @@
 //! (`native::tests::real_sspi`), which checks the connection's channel binding as an Extended Protection server does.
 //! A Windows-only module, not a skip. No account is created and no password is used.
 use super::{
-    https_tests::{Case, Unavailable, body, context_of, operation_of},
+    https_tests::{ADVERTISEMENT, Case, Unavailable, body, context_of, operation_of},
     tests::block_on,
 };
 use crate::git::endpoint::{
     https_adapter::Binding,
-    https_fixture::Behaviour,
+    https_fixture::{Behaviour, ConnectionId as Served, Handler, response},
     https_worker::native::tests::real_sspi::{
         Expects, acceptor_handler, real_caller, settle_worker,
     },
 };
-use gwz_transport::protocol::Disposition;
-use std::sync::{Arc, Mutex};
+use bytes::Bytes;
+use gwz_connection::GitService;
+use gwz_transport::protocol::{self, Disposition};
+use hyper::header::{AUTHORIZATION, WWW_AUTHENTICATE};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 fn settle(supervisor: Arc<gwz_sspi::Supervisor>) {
     tokio::runtime::Builder::new_current_thread()
@@ -118,5 +125,113 @@ fn the_logon_session_is_each_operations_own_through_the_host_on_windows() {
         "the acceptor saw a token from B"
     );
     assert!(case.close());
+    settle(supervisor);
+}
+
+/// The acceptor fixture as an NTLM server is: it remembers each connection whose token it accepted and serves any later
+/// request on it with no token, a push's POST included; every other request is the acceptor's to answer. Its answers
+/// carry the push service's content type and the advertisement. `seen` records (GET, carried a token, connection).
+fn remembering(statuses: Arc<Mutex<Vec<i32>>>, seen: Arc<Mutex<Vec<(bool, bool, usize)>>>) -> Handler {
+    let acceptor = acceptor_handler("NTLM", "NTLM", Expects::Right, statuses);
+    let authenticated = Arc::new(Mutex::new(BTreeSet::new()));
+    Arc::new(move |request| {
+        let connection = request.extensions().get::<Served>().map_or(0, |id| id.0);
+        let get = request.method() == hyper::Method::GET;
+        let service = if get {
+            protocol::GitService::ReceivePackAdvertisement
+        } else {
+            protocol::GitService::ReceivePackExchange
+        };
+        let token = request.headers().contains_key(AUTHORIZATION);
+        seen.lock().unwrap().push((get, token, connection));
+        let served = if get {
+            Bytes::from_static(ADVERTISEMENT)
+        } else {
+            Bytes::from_static(b"0000")
+        };
+        if !token && authenticated.lock().unwrap().contains(&connection) {
+            let body = request.into_body();
+            return Box::pin(async move {
+                let _ = http_body_util::BodyExt::collect(body).await;
+                response(200, service, served)
+            });
+        }
+        let (acceptor, authenticated) = (acceptor.clone(), authenticated.clone());
+        Box::pin(async move {
+            let answer = acceptor(request).await;
+            if answer.status() != 200 {
+                return answer;
+            }
+            authenticated.lock().unwrap().insert(connection);
+            let mut accepted = response(200, service, served);
+            if let Some(last) = answer.headers().get(WWW_AUTHENTICATE) {
+                accepted.headers_mut().insert(WWW_AUTHENTICATE, last.clone());
+            }
+            accepted
+        })
+    })
+}
+
+#[test]
+fn h3d_5_a_logon_session_push_through_the_host_on_a_hint_hit_and_after_its_connection_is_gone() {
+    // HTTPS model draft r5 rows 1 and 3, row H3d-5: real SSPI, the enforcing acceptor fixture. The push advertisement
+    // authenticates c1 with the logon session and learns the key connection-bound. Hint hit: the POST goes on c1 with no
+    // token and no second conversation. Connection gone: the server closes the idle c1, so the POST lands on c2, which
+    // its re-authentication authenticates (a second conversation the acceptor accepts) before the POST goes, once.
+    let (caller, supervisor) = real_caller();
+    for gone in [false, true] {
+        let (statuses, seen) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
+        let (accepted, recorded) = (statuses.clone(), seen.clone());
+        let behaviour = Behaviour {
+            idle: gone.then_some(Duration::from_secs(1)),
+            ..Behaviour::default()
+        };
+        let case = Case::with(
+            move |_| remembering(accepted, recorded),
+            behaviour,
+            |_| (None, None),
+            None,
+        );
+        let operation = operation_of(&case.handle, "op-push", context_of(None, Some(caller.clone())));
+        let mut advertisement = case.exchange_at(&operation, GitService::ReceivePackAdvertisement, "/repo");
+        assert_eq!(body(&mut advertisement).unwrap(), ADVERTISEMENT, "gone {gone}");
+        assert_eq!(block_on(advertisement.finish()).disposition, Disposition::Reusable);
+        let c1 = seen.lock().unwrap().last().unwrap().2;
+        let conversation = statuses.lock().unwrap().len();
+        assert_eq!(statuses.lock().unwrap().last(), Some(&0), "gone {gone}: the acceptor accepted");
+        if gone {
+            case.wait("the idle connection is gone", |counts| counts.total() == 0);
+        } else {
+            case.wait("the connection is idle", |counts| counts.leased == 0);
+        }
+        let before = seen.lock().unwrap().len();
+        let mut push = case.exchange_at(&operation, GitService::ReceivePackExchange, "/repo");
+        let _ = block_on(push.stream().write_all(b"0000"));
+        assert_eq!(body(&mut push).unwrap(), b"0000", "gone {gone}: the push");
+        assert_eq!(block_on(push.finish()).disposition, Disposition::Reusable);
+        let sent = seen.lock().unwrap()[before..].to_vec();
+        let post = sent.iter().filter(|(get, _, _)| !*get).collect::<Vec<_>>();
+        assert_eq!(post.len(), 1, "gone {gone}: the POST was not sent once: {sent:?}");
+        assert!(!post[0].1, "gone {gone}: the POST carried a token");
+        if gone {
+            assert_ne!(post[0].2, c1, "the POST went on a closed connection");
+            assert!(
+                statuses.lock().unwrap().len() > conversation
+                    && statuses.lock().unwrap().last() == Some(&0),
+                "the re-authentication's conversation was not accepted"
+            );
+            assert!(sent.iter().all(|(_, _, on)| *on == post[0].2), "{sent:?}");
+        } else {
+            assert_eq!(post[0].2, c1, "the hint missed");
+            assert_eq!(sent.len(), 1, "a re-authentication on a hint hit: {sent:?}");
+            assert_eq!(statuses.lock().unwrap().len(), conversation);
+        }
+        assert!(
+            case.scopes().iter().all(|(_, scope)| scope.binding == Binding::LogonSession),
+            "gone {gone}"
+        );
+        block_on(operation.finish());
+        assert!(case.close(), "gone {gone}");
+    }
     settle(supervisor);
 }

@@ -1,11 +1,11 @@
 //! One exchange's task on the worker's runtime: the smart-HTTP request on its leased connection, the answer to a
 //! challenge (`auth.rs`), the response body into the client's buffer, and the settlement that decides whether the
 //! connection can serve another exchange.
-use super::{Binding, HttpsSettings, auth, closes, pipe::Pipe};
+use super::{Binding, Counters, HttpsSettings, auth, closes, pipe::Pipe};
 use crate::git::endpoint::{
     https_auth::{
         self,
-        needs::{NeedKey, Needs, Recorded},
+        needs::{Evidence, NeedKey, Needs, Recorded},
     },
     https_connection::{Connection, RequestBody},
     https_destination::Destination,
@@ -41,6 +41,8 @@ pub(super) struct Common {
     /// The native conversations whose cleanup is not yet confirmed; disposal waits for them.
     pub(super) retained: NativeRetained,
     pub(super) cancel: CancellationToken,
+    /// The factory's shared counters, which every re-authentication counts into (draft r5 3.1, Counter).
+    pub(super) counters: Counters,
 }
 
 /// The worker's half of one exchange (`pipe::exchange` makes it with the client's).
@@ -53,13 +55,8 @@ pub(crate) struct Work {
     /// The context of the operation this exchange serves, whose helper answers its challenges. It is dropped when the
     /// exchange's task ends.
     pub(super) auth: AuthContext,
-    /// Which authentication bound the connection when the exchange was given it (the adapter's scope record). It stays
-    /// for the connection-bound learning of draft r5 section 3.1 (G2: a key served unchallenged on a logon-session
-    /// connection), sub-step H3a.
-    #[allow(
-        dead_code,
-        reason = "read by the connection-bound learning of HTTPS model draft r5 sub-step H3a (G2), which removes this"
-    )]
+    /// Which authentication bound the connection when the exchange was given it (the adapter's scope record): a key
+    /// served unchallenged on a logon-session connection is learned `OnBound` (draft r5 3.1, G2).
     pub(super) prior: Binding,
     pub(super) pipe: Arc<Pipe>,
     pub(super) settle: Arc<Settle>,
@@ -199,20 +196,32 @@ pub(super) async fn run(
     }
 }
 
-/// The credential a POST of `key` carries from its first byte (draft r5 3(d)): the record's, its header built under the
-/// record's lock, for a key learned `Basic` (P1); none for a key never learned (P3), sent anonymously, or a
-/// connection-bound one (P4). A key the record rejected sends nothing (P7), nor does one it could not keep (P8, X3).
-/// A 401 to a POST that carried the record's credential rejects it (P2).
-fn post_header(
-    needs: &Needs,
-    key: &NeedKey,
-) -> Result<Option<https_auth::SecretHeader>, ErrorCode> {
+/// What a POST of `key` carries from its first byte (draft r5 3(d)): the record's credential, its header built under
+/// the record's lock, for a key learned `Basic` (P1); none for a key never learned (P3), sent anonymously; none for a
+/// connection-bound one, which is sent on a logon-session connection as it is (P4) and re-authenticates any other first
+/// (P5). A key the record rejected sends nothing (P7), nor does one it could not keep (P8, X3). A 401 to a POST that
+/// carried the record's credential rejects it (P2).
+fn post_header(needs: &Needs, key: &NeedKey) -> Result<Post, ErrorCode> {
     match needs.answer(key)? {
-        Recorded::Basic(header) => Ok(Some(header)),
-        Recorded::Unrecorded | Recorded::ConnectionBound { .. } => Ok(None),
+        Recorded::Basic(header) => Ok(Post {
+            header: Some(header),
+            learned: None,
+        }),
+        Recorded::Unrecorded => Ok(Post::default()),
+        Recorded::ConnectionBound { observed, evidence } => Ok(Post {
+            header: None,
+            learned: Some((observed, evidence)),
+        }),
         Recorded::Rejected => Err(ErrorCode::Authentication),
         Recorded::Unretained | Recorded::Tombstone => Err(ErrorCode::Capacity),
     }
+}
+/// What a POST carries from its first byte, and, for a connection-bound key, the advertisement length its entry observed
+/// and how it was learned, which its re-authentication needs.
+#[derive(Default)]
+struct Post {
+    header: Option<https_auth::SecretHeader>,
+    learned: Option<(u64, Evidence)>,
 }
 
 async fn exchange(
@@ -236,17 +245,31 @@ async fn exchange(
     // of a key an advertisement of this operation learned carries the credential the operation's record holds from its
     // first byte, on whichever connection the pool leased; one of a key never learned goes out anonymously, as a
     // repository the server serves to anyone must stay reachable without a helper. No helper runs for a POST.
-    let header = match operation {
+    let Post { header, learned } = match operation {
         Some(operation) if !https_policy::advertisement(service) => {
             post_header(operation.needs(), &key)?
         }
-        _ => None,
+        _ => Post::default(),
     };
     // The operation whose record's credential the request carries, if it carries one.
     let carried = operation.filter(|_| header.is_some());
     if carried.is_some() {
         *binding = Binding::HelperToken;
     }
+    // A connection-bound key's POST on a connection the logon session has not authenticated re-authenticates it before
+    // its first byte (draft r5 3.1, P5); on one it has, the POST goes as it is (P4).
+    if let (Some(operation), Some(learned)) = (operation, learned)
+        && work.prior != Binding::LogonSession
+    {
+        *binding = tokio::select! {
+            bound = auth::reauthenticate(connection, &destination, service, (operation, &key), learned, common) => bound?,
+            _ = work.pipe.interrupted() => return Ok(Disposition::Discarded),
+        };
+    }
+    // The POST rides the logon session's authentication of its connection (P4, RA1): a 401 to it rejects the key (P6).
+    // After RA2a it goes as an unrecorded key's, and a 401 to it changes nothing.
+    let rides = learned.is_some()
+        && (work.prior == Binding::LogonSession || *binding == Binding::LogonSession);
     let request = request(
         &destination,
         service,
@@ -255,12 +278,15 @@ async fn exchange(
     );
     drop(header);
     let request = request?;
+    // From here the exchange's own request may reach the server (contract 9, A7); a re-authentication did not move it.
+    work.pipe.sending();
     let response = tokio::select! {
         response = send(connection, request, &common.settings) => response?,
         _ = work.pipe.interrupted() => return Ok(Disposition::Discarded),
     };
     // A fresh lookup's credential belongs to this exchange until the record keeps it or it is dropped and wiped.
     let mut fresh = None;
+    let challenged = response.status() == hyper::StatusCode::UNAUTHORIZED;
     let response = match (response.status().as_u16(), carried) {
         (401, _) if https_policy::advertisement(service) => {
             // An `Exhausted` record (draft r5 X2, X4; a poisoned lock makes it so here) answers nothing and starts no
@@ -280,6 +306,11 @@ async fn exchange(
         // The POST's credential is refused (P2): it is rejected at once for every key of the origin holding it, and
         // the exchange ends `Authentication`, its connection discarded. Its body was on the wire: it is not replayed.
         (401, Some(operation)) => return Err(operation.needs().reject(&key, None)),
+        (401, None) if rides => {
+            return Err(operation.map_or(ErrorCode::Authentication, |operation| {
+                operation.needs().refuse(&key)
+            }));
+        }
         _ => response,
     };
     match https_policy::classify(response.status().as_u16(), service) {
@@ -300,8 +331,35 @@ async fn exchange(
     if let (Some(secret), Some(operation)) = (fresh, operation) {
         operation.needs().record(&key, secret)?;
     }
+    // The connection-bound learning (draft r5 3.1, Learning), at the same point: the logon session answered the
+    // challenge (G8, `Challenged`), or the connection was the logon session's when the exchange was given it and the
+    // advertisement was served unchallenged (G2, `OnBound`, which proves nothing about the key's need). A `Basic` answer
+    // records `Basic` even on such a connection. Then the exchange says its connection is bound when the connection's
+    // scope after it is `LogonSession` (W3: the record only rises), before any byte of the body reaches the client.
+    let bound = work.prior == Binding::LogonSession || *binding == Binding::LogonSession;
+    let observing = match operation {
+        Some(operation) if https_policy::advertisement(service) => {
+            let evidence = if *binding == Binding::LogonSession {
+                Some(Evidence::Challenged)
+            } else if bound && !challenged {
+                Some(Evidence::OnBound)
+            } else {
+                None
+            };
+            if let Some(evidence) = evidence {
+                operation.needs().bound(&key, 0, evidence)?;
+            }
+            Some(operation).filter(|_| bound)
+        }
+        _ => None,
+    };
+    if bound {
+        work.pipe.bind();
+    }
     let closing = closes(response.headers());
     let mut body = response.into_body();
+    // The advertisement's length, which a connection-bound key's entry keeps (3.1, condition 4).
+    let mut delivered = 0u64;
     loop {
         if work.pipe.room().await.is_err() {
             // The client ended it with the body unread, or abandoned it: the connection cannot be pooled.
@@ -315,6 +373,7 @@ async fn exchange(
             None => break,
             Some(Ok(frame)) => {
                 if let Ok(data) = frame.into_data() {
+                    delivered = delivered.saturating_add(data.len() as u64);
                     work.pipe.deliver(&data);
                 }
             }
@@ -323,6 +382,10 @@ async fn exchange(
         }
     }
     drop(body);
+    // Written before the exchange's end is visible: a client that read the advertisement finds its length.
+    if let Some(operation) = observing {
+        operation.needs().observe(&key, delivered);
+    }
     work.pipe.end(Ok(()));
     if !work.pipe.settled().await || closing {
         return Ok(Disposition::Discarded);
