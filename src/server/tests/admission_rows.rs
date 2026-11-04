@@ -17,7 +17,7 @@ use crate::transport_host::carrier::{
         Action, Bounds, ClientConfig, ClientFault, ClientOutcome, Control, DialFault, Hooks,
         HostOutcome, Intent, OpenRequest, OpenedInfo, Refusal, State, decode_session_limits, dial,
     },
-    local::PeerPolicy,
+    local::{PeerPolicy, row_gate, walk_to},
 };
 
 /// `invalid_request` and `transport_session_full` on the wire.
@@ -284,8 +284,9 @@ fn connect(
             peer_pid: None,
             bounds: Bounds::DEFAULT,
         };
+        let gate = row_gate();
         let client = dial(
-            host.address(),
+            walk_to(host.address(), &gate).expect("the walk"),
             &PeerPolicy::current_user().unwrap(),
             CarrierLimits::DEFAULT,
             &config,
