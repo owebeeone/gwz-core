@@ -35,12 +35,22 @@
 //! the end writes exactly one `SessionError` (`invalid_request`, call ID 0) and closes. A sender's own refusal happens
 //! before any byte of the frame is queued.
 //!
+//! **Before the session opens.** A host's end built with [`CarrierLimits::awaiting_open`] takes one registry frame,
+//! the handshake's, and ends as `Protocol(BeforeOpened(class))` on any other frame it reads until it queues
+//! `SessionOpened` (`GwzSplitCommandChannel.md` §3.3 "When"). The router checks and [`StreamCarrier::send_frame`]
+//! clears the gate under the end's one lock, so no frame falls between the two (plan step 2.3g1).
+//!
 //! **Endings.** A peer that stops listening ends this end's writing, not its reading; a peer that stops reading ends
 //! the carrier as `Stalled` after the no-progress bound; a closing end gives up flushing after the close bound
 //! ([`writer`]).
 //!
-//! **Bytes written** are bounded as well: at most [`QUEUE_BYTES`] queued for the writer, and a frame larger than that
-//! is admitted only into an empty queue.
+//! **Bytes written** are bounded as well: at most [`QUEUE_BYTES`] of data queued for the writer, and
+//! [`CONTROL_QUEUE_BYTES`] more that only the control lane uses; a frame larger than that is admitted only into an
+//! empty queue. Only a lane at its frame count, the peer's own overrun, is `Full` to a sender that tells byte pressure
+//! apart: [`StreamCarrier::offer_frame`] gives a pressed frame back without waiting, and
+//! [`StreamCarrier::send_frame_paced`] waits until the writer takes frames (bounded by the stall watchdog, since frames
+//! are queued while it waits). A served session offers its replies and holds what is pressed, which one pacer of its own
+//! sends paced, so no thread of the session host waits for the writer (plan step 2.3g1, remediations F1 and F9).
 use super::{
     Arrival, Attachment, BindingFault, BindingLimits, Carrier, CarrierBinding, CarrierClosed,
     CarrierLimits, CloseCode, CloseReason, Lane, ProtocolFault, SendRefused, TakeEnd, wire,
@@ -60,16 +70,34 @@ mod inbound;
 mod state;
 mod writer;
 
-use state::{BindingInbound, Ending, Scope, State, Taken};
+use state::{BindingInbound, Ending, PreOpen, Scope, State, Taken};
 use writer::{Counting, Progress, watch_loop, write_loop};
 
-pub(crate) use writer::QUEUE_BYTES;
+pub(crate) use writer::{CONTROL_QUEUE_BYTES, QUEUE_BYTES};
 
 /// Why [`StreamCarrier::send_frame`] did not send; the frame comes back.
 #[derive(Debug)]
 pub(crate) enum FrameRefused {
     Full(Frame),
     Closed(Frame, CarrierClosed),
+}
+
+/// What [`StreamCarrier::offer_frame`] did with a frame it did not refuse.
+#[derive(Debug)]
+pub(crate) enum Offered {
+    /// Queued for the writer.
+    Queued,
+    /// The queue's bytes have no room for it until the writer takes frames; it comes back.
+    Pressed(Frame),
+}
+
+/// What a sender does when the queue's bytes have no room for its frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Pressure {
+    /// Answer at once.
+    Refuse,
+    /// Wait for the writer to take frames, or for the end.
+    Wait,
 }
 
 /// Why [`StreamCarrier::open_binding`] did not open a binding.
@@ -94,6 +122,8 @@ struct Core {
     reader_gone: Condvar,
     /// The watchdog waits here for work, a deadline or the end.
     watch_ready: Condvar,
+    /// A paced sender waits here for the writer to take a frame, or for the end.
+    room: Condvar,
     /// Forces the stream shut: shuts a socket down so that a blocked read or write returns.
     abort: Box<dyn Fn() + Send + Sync>,
     binding: CarrierBinding,
@@ -169,7 +199,10 @@ impl Drop for ReadGuard {
 }
 
 enum Admission {
+    /// The lane is at its frame count.
     Full(Frame),
+    /// The queue's bytes have no room for the frame until the writer takes frames.
+    Pressed(Frame),
     Closed(Frame, CarrierClosed),
 }
 
@@ -193,11 +226,12 @@ impl StreamCarrier {
     ) -> io::Result<Self> {
         let progress = Arc::new(Progress::new());
         let core = Arc::new(Core {
-            state: Mutex::new(State::new()),
+            state: Mutex::new(State::new(limits.is_awaiting_open())),
             out_ready: Condvar::new(),
             in_ready: Condvar::new(),
             reader_gone: Condvar::new(),
             watch_ready: Condvar::new(),
+            room: Condvar::new(),
             abort,
             binding,
             limits,
@@ -263,30 +297,99 @@ impl StreamCarrier {
         lock(self.core()).discarded
     }
 
-    /// Queues a registry frame (tags 1 to 8) on `lane`, keyed by `key`. A `SessionOpen` is checked first.
+    /// Queues a registry frame (tags 1 to 8) on `lane`, keyed by `key`, without waiting: `Full` for a lane at its frame
+    /// count or a queue without room for the frame's bytes. A `SessionOpen` is checked first.
     pub(crate) fn send_frame(
         &self,
         frame: Frame,
         lane: Lane,
         key: FrameKey,
     ) -> Result<(), FrameRefused> {
+        match self.queue_frame(frame, lane, key, Pressure::Refuse)? {
+            Offered::Queued => Ok(()),
+            Offered::Pressed(frame) => Err(FrameRefused::Full(frame)),
+        }
+    }
+
+    /// [`StreamCarrier::send_frame`] that tells byte pressure apart, without waiting: `Pressed` gives the frame back
+    /// while the queue's bytes have no room for it, and `Full` is only a lane at its frame count. For a sender that
+    /// must never wait for the writer and holds what is pressed itself (a served session's replies, plan step 2.3g1,
+    /// remediation F9).
+    pub(crate) fn offer_frame(
+        &self,
+        frame: Frame,
+        lane: Lane,
+        key: FrameKey,
+    ) -> Result<Offered, FrameRefused> {
+        self.queue_frame(frame, lane, key, Pressure::Refuse)
+    }
+
+    /// [`StreamCarrier::send_frame`] for a sender that waits for the writer: while the queue's bytes have no room for
+    /// the frame, it waits until the writer takes frames or the carrier ends. A lane at its frame count is still `Full`
+    /// at once. The wait is bounded by the stall watchdog: frames are queued while it waits, so a peer that takes no
+    /// byte for the no-progress bound ends the carrier as `Stalled`, and the frame comes back `Closed`.
+    pub(crate) fn send_frame_paced(
+        &self,
+        frame: Frame,
+        lane: Lane,
+        key: FrameKey,
+    ) -> Result<(), FrameRefused> {
+        match self.queue_frame(frame, lane, key, Pressure::Wait)? {
+            Offered::Queued => Ok(()),
+            // Not reached: a waiting sender is never given its frame back for its bytes.
+            Offered::Pressed(frame) => Err(FrameRefused::Full(frame)),
+        }
+    }
+
+    fn queue_frame(
+        &self,
+        frame: Frame,
+        lane: Lane,
+        key: FrameKey,
+        pressure: Pressure,
+    ) -> Result<Offered, FrameRefused> {
         if let Some(fault) = frame_fault(&frame) {
             let reason = CloseReason::Protocol(fault);
             self.core()
                 .finish(reason, Ending::Flush(CloseCode::ProtocolFault));
             return Err(FrameRefused::Closed(frame, closed(reason)));
         }
+        let opened = frame.tag == gwz_session_contract::Tag::SessionOpened.byte();
         let mut state = lock(self.core());
-        match self.core().admit(&mut state, frame, lane, key) {
-            Ok(()) => {
-                drop(state);
-                self.core().out_ready.notify_one();
-                self.core().watch_ready.notify_one();
-                Ok(())
+        let mut frame = frame;
+        loop {
+            match self.core().admit(&mut state, frame, lane, key) {
+                Ok(()) => {
+                    if opened {
+                        // Under the lock the router takes: a frame read from here on is the open session's.
+                        state.pre_open = PreOpen::Off;
+                    }
+                    drop(state);
+                    self.core().out_ready.notify_one();
+                    self.core().watch_ready.notify_one();
+                    return Ok(Offered::Queued);
+                }
+                Err(Admission::Closed(frame, reason)) => {
+                    return Err(FrameRefused::Closed(frame, reason));
+                }
+                Err(Admission::Full(frame)) => return Err(FrameRefused::Full(frame)),
+                Err(Admission::Pressed(back)) if pressure == Pressure::Wait => {
+                    frame = back;
+                    state = self
+                        .core()
+                        .room
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+                Err(Admission::Pressed(back)) => return Ok(Offered::Pressed(back)),
             }
-            Err(Admission::Closed(frame, reason)) => Err(FrameRefused::Closed(frame, reason)),
-            Err(Admission::Full(frame)) => Err(FrameRefused::Full(frame)),
         }
+    }
+
+    /// Whether this end was built to hold its frames until the session opens ([`CarrierLimits::awaiting_open`]): the
+    /// end a served session's handshake needs.
+    pub(crate) fn awaits_open(&self) -> bool {
+        self.core().limits.is_awaiting_open()
     }
 
     /// The next registry frame (tags 1 to 8), if one has arrived. Transport frames are not its business.
@@ -382,6 +485,12 @@ impl StreamCarrier {
     /// Frames queued for the writer, the one it is writing excluded.
     pub(crate) fn queued_out(&self) -> usize {
         lock(self.core()).out.len()
+    }
+
+    /// How many more frames `lane` admits now: its frame count less the frames queued on it for the writer.
+    pub(crate) fn free_frames(&self, lane: Lane) -> usize {
+        let queued = lock(self.core()).out_lanes[lane_index(lane)];
+        self.core().limits.capacity(lane).saturating_sub(queued)
     }
 
     /// How long frames have waited with no byte accepted by the stream, or `None` while nothing waits: the progress
@@ -490,7 +599,9 @@ impl Carrier for StreamCarrier {
             Err(Admission::Closed(_, reason)) => {
                 Err(SendRefused::Closed(Box::new(message), reason))
             }
-            Err(Admission::Full(_)) => Err(SendRefused::Full(Box::new(message))),
+            Err(Admission::Full(_) | Admission::Pressed(_)) => {
+                Err(SendRefused::Full(Box::new(message)))
+            }
         }
     }
 

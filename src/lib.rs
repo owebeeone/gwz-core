@@ -47,6 +47,10 @@ pub mod protocol;
 cfg_if::cfg_if! {
     if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
         pub mod transport_host;
+        // Plan step 2.3 (gwz-dev dev-docs/GwzServerCore-Step2.3-Plan.md): the `gwz server` composition, the session
+        // policy first (2.3g1). Its first production caller is the accept loop of step 2.3i; the allowances are on its
+        // entry items.
+        pub(crate) mod server;
     }
 }
 pub mod runtime;

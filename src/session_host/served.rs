@@ -22,19 +22,28 @@
 //! session can meet on a member's refs and one fails on Git's own ref lock,
 //! the outcome two CLI processes get, where §5.1 would make the second wait.
 //!
-//! Sessions of one host share its detached-worker record (2.0 §1), which the
-//! host context holds. The in-process carrier is [`serve_in_process`]; the
-//! server step (2.3) serves byte streams through 2.1's router.
+//! Sessions of one host share its detached-worker record (2.0 §1) and its
+//! member lock manager (§5.1), which the host context holds. A byte stream is
+//! served by `stream::serve_stream` (step 2.3g1), over 2.1's router; the
+//! in-process carrier's `serve_in_process` is test support until the
+//! in-process CLI sessions of Phase 7 (lane owner, 2026-11-03).
+//!
+//! **The core-side log** (2.0 §4.3 "Carrier loss"): every call that runs (a
+//! handler that panics included), and every operation that ends without
+//! running or is detached, is handed to the session's [`OperationLog`] with
+//! its method, call ID, operation ID, outcome and how long its handler ran,
+//! and nothing from its request or response; a stream session's end is
+//! logged once, with why it ended.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use gwz_session_channel::{InProcessEnd, pair};
-use gwz_session_contract::{Frame, FrameSink, FrameSource, Lane, Tag};
+use gwz_session_contract::{Frame, Lane, Tag};
 use gwz_session_host::{
     Call, Cleanup, Code, Ending, EventsBatch, EventsRead, HostError, HostPorts, Limits, Mode,
     Outcome, ProtocolError, ReplySink, Request, Resolved, Service, Terminal, Verb, Worker,
-    validate_limits,
 };
 
 use super::context::HostContext;
@@ -52,9 +61,13 @@ pub(crate) use spool::{Kind as SpoolKind, Spools};
 cfg_if::cfg_if! {
     // The frozen body of the transport lane, `TransportLaneFrame` (2.0
     // §3.3): its codec only. Routing tags 16 and 17, and every per-binding
-    // state, is step 2.1's carrier's (2.0 §3.3 "Reader interface").
-    if #[cfg(gwz_transport_candidate)] {
+    // state, is step 2.1's carrier's (2.0 §3.3 "Reader interface"). Beside it,
+    // a session served over a byte stream (step 2.3g1).
+    if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
         pub(crate) mod lane;
+        // What a served stream session hands back is first read by the
+        // accept loop of step 2.3i; the allowances are on those items.
+        pub(crate) mod stream;
     }
 }
 
@@ -111,9 +124,138 @@ impl ServedFailure {
     }
 }
 
+/// How a call ended, as the core-side log records it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Ended {
+    /// The handler produced a response, even one whose aggregate status is
+    /// failed.
+    Completed,
+    /// The handler failed with this code.
+    Failed(crate::GwzErrorCode),
+    /// The handler returned after its token was cancelled: by
+    /// `operation.cancel`, by `session.close` or by the loss of its carrier.
+    Cancelled,
+    /// The handler panicked; the client gets `internal_error`, and the
+    /// handler's cleanup is unconfirmed.
+    Panicked,
+    /// The operation ended without running its handler, with this code: it
+    /// was cancelled or refused before it started, or no thread could run it.
+    NotRun(crate::GwzErrorCode),
+    /// Its worker still ran at the close bound and was detached (§8 step 5);
+    /// the handler's own end is logged when it returns.
+    Detached,
+}
+
+/// One call's end in the core-side log: what the log may hold, and nothing
+/// from the request, the response or an error's text.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Logged {
+    pub(crate) method: String,
+    pub(crate) call_id: u64,
+    /// The operation's ID; `None` for a direct call.
+    pub(crate) operation_id: Option<String>,
+    pub(crate) ended: Ended,
+    /// How long the handler ran; `None` when it did not run, or has not
+    /// returned (detached).
+    pub(crate) duration: Option<Duration>,
+}
+
+impl std::fmt::Display for Logged {
+    /// The entry as one log line: `method` (quoted and escaped: the client
+    /// names it), `call`, `operation` (`-` for a direct call), `outcome` and
+    /// `duration_ms` (`-` when the handler did not run or has not returned).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let outcome = match self.ended {
+            Ended::Completed => "completed".to_owned(),
+            Ended::Failed(code) => format!("failed:{}", code.wire()),
+            Ended::Cancelled => "cancelled".to_owned(),
+            Ended::Panicked => "panicked".to_owned(),
+            Ended::NotRun(code) => format!("not_run:{}", code.wire()),
+            Ended::Detached => "detached".to_owned(),
+        };
+        let duration = self
+            .duration
+            .map_or_else(|| "-".to_owned(), |run| run.as_millis().to_string());
+        write!(
+            f,
+            "method={:?} call={} operation={} outcome={outcome} duration_ms={duration}",
+            self.method,
+            self.call_id,
+            self.operation_id.as_deref().unwrap_or("-")
+        )
+    }
+}
+
+/// A session's end in the core-side log: how its channel ended and why.
+#[derive(Clone, Debug, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "the stream session, the transport candidate's (plan step 2.3g1), ends sessions; the ordinary build serves none"
+)]
+pub(crate) struct SessionEnded {
+    /// `Protocol` for a frame the session could not accept; `Channel` for the
+    /// carrier's end, the session's own close among them.
+    pub(crate) ending: Ending,
+    /// The host-composed protocol error (tag and call numbers, nothing the
+    /// client wrote), or the carrier's close reason.
+    pub(crate) detail: String,
+}
+
+impl std::fmt::Display for SessionEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ending = match self.ending {
+            Ending::Channel => "channel",
+            Ending::Protocol => "protocol",
+        };
+        write!(f, "session_end ending={ending} detail={:?}", self.detail)
+    }
+}
+
+/// Where a session's calls are logged as they end, and its own end: the
+/// server's log (plan step 2.3i), or a row's record.
+///
+/// **It must not block, and must not call into the session.** The session
+/// host settles a call that did not run (`settled_result`) and a detached one
+/// (`detached`) under the session's table lock, so `ended` may run with that
+/// lock held: a log that waited there would stall every call of the session,
+/// and one that called back into its service would deadlock. A log that
+/// writes to a file or a pipe queues the entry and writes on a thread of its
+/// own (step 2.3i).
+pub(crate) trait OperationLog: Send + Sync + 'static {
+    /// A call has ended: see [`Logged`].
+    fn ended(&self, entry: Logged);
+
+    /// A stream session has ended, once, from its serving thread with no lock
+    /// held.
+    #[allow(
+        dead_code,
+        reason = "the stream session, the transport candidate's (plan step 2.3g1), ends sessions; the ordinary build serves none"
+    )]
+    fn session_ended(&self, end: SessionEnded);
+}
+
 /// Core's ports.
 pub(crate) struct ServedPorts {
     dispatch: Arc<dyn Dispatch>,
+    log: Arc<dyn OperationLog>,
+}
+
+impl ServedPorts {
+    fn log(
+        &self,
+        call: &Call,
+        operation_id: Option<&str>,
+        ended: Ended,
+        duration: Option<Duration>,
+    ) {
+        self.log.ended(Logged {
+            method: call.method.clone(),
+            call_id: call.call_id,
+            operation_id: operation_id.map(str::to_owned),
+            ended,
+            duration,
+        });
+    }
 }
 
 fn encode(cbor: &crate::Cbor) -> Vec<u8> {
@@ -303,6 +445,7 @@ impl HostPorts for ServedPorts {
         worker: &Worker<ServedSession>,
     ) -> Outcome<ServedFailure> {
         let started = crate::operation::now_ms().0;
+        let clock = Instant::now();
         let start = if takes_no_workspace(&call.method) {
             worker
                 .effect(|scope| scope.session().root().to_path_buf())
@@ -312,22 +455,45 @@ impl HostPorts for ServedPorts {
                 .and_then(|meta| crate::workspace_ops::caller_directory(&meta))
         };
         let events = GateEvents { worker };
-        let ran = start.and_then(|start| {
-            self.dispatch
-                .run(&call.method, &call.request, &start, worker, &events)
-        });
+        // A panic is caught here, not by the session host's backstop, so that
+        // the log records that the handler ran and for how long (2.0 §4.3).
+        let ran = catch_unwind(AssertUnwindSafe(|| {
+            start.and_then(|start| {
+                self.dispatch
+                    .run(&call.method, &call.request, &start, worker, &events)
+            })
+        }));
         let operation_id = worker.operation_id().map(str::to_owned);
         let finish = |errors: Vec<crate::GwzError>, envelope| {
             operation_id
                 .as_deref()
                 .map_or_else(Vec::new, |id| result(call, id, started, envelope, errors))
         };
-        match ran {
-            Ok(response) => Outcome {
-                result: finish(Vec::new(), envelope(&response)),
-                terminal: Terminal::Completed(response),
+        let log = |ended| {
+            self.log(call, operation_id.as_deref(), ended, Some(clock.elapsed()));
+        };
+        let Ok(ran) = ran else {
+            log(Ended::Panicked);
+            // The terminal the session host gives a panic of its own catching.
+            let failure = ServedFailure::code(
+                ErrorCode::InternalError,
+                "the handler panicked; its cleanup is unconfirmed",
+            );
+            return Outcome {
+                result: finish(vec![failure.error.clone()], None),
+                terminal: Terminal::Failed(failure),
                 cleanup: Cleanup::default(),
-            },
+            };
+        };
+        match ran {
+            Ok(response) => {
+                log(Ended::Completed);
+                Outcome {
+                    result: finish(Vec::new(), envelope(&response)),
+                    terminal: Terminal::Completed(response),
+                    cleanup: Cleanup::default(),
+                }
+            }
             Err(error) => {
                 let mut failure = ServedFailure::model(&error);
                 if worker.token().is_cancelled() && error.code != ErrorCode::Cancelled {
@@ -339,6 +505,11 @@ impl HostPorts for ServedPorts {
                 errors.extend(failure.cause.clone());
                 let result = finish(errors, None);
                 let cancelled = failure.error.code == crate::GwzErrorCode::Cancelled;
+                log(if cancelled {
+                    Ended::Cancelled
+                } else {
+                    Ended::Failed(failure.error.code)
+                });
                 Outcome {
                     terminal: if cancelled {
                         Terminal::Cancelled(failure)
@@ -378,6 +549,12 @@ impl HostPorts for ServedPorts {
     }
 
     fn settled_result(&self, call: &Call, operation_id: &str, failure: &ServedFailure) -> Vec<u8> {
+        self.log(
+            call,
+            Some(operation_id),
+            Ended::NotRun(failure.error.code),
+            None,
+        );
         let started = crate::operation::now_ms().0;
         result(
             call,
@@ -389,6 +566,7 @@ impl HostPorts for ServedPorts {
     }
 
     fn detached(&self, call: &Call, operation_id: Option<&str>) -> (ServedFailure, Vec<u8>) {
+        self.log(call, operation_id, Ended::Detached, None);
         let failure = ServedFailure::code(ErrorCode::Cancelled, "cancelled at the close bound");
         let detached: crate::GwzError = (&ModelError::new(
             ErrorCode::InternalError,
@@ -504,45 +682,34 @@ impl HostPorts for ServedPorts {
     }
 }
 
-/// A served session over the in-process carrier: the client's end and the
-/// service, whose reader thread routes the client's frames.
-#[allow(
-    dead_code,
-    reason = "the server step (2.3) composes it; tests drive it now"
-)]
-pub(crate) struct ServedChannel {
-    pub(crate) client: InProcessEnd,
-    pub(crate) service: Service<ServedPorts>,
-}
-
-/// Serves one session of the workspace at `root` over an in-process pair,
-/// with `dispatch` running its handlers and `host`'s detached-worker record.
-/// The in-process session is open at once: `open` is its handshake.
+/// One session's service, not yet started: its data, with `host`'s member
+/// lock manager (§5.1) and detached-worker record, and core's ports over
+/// `dispatch` and `log`. `limits` have passed `validate_limits`; `opened` is
+/// `Service::new`'s. Both constructors build their service here.
 ///
 /// # Errors
 ///
-/// Limits `open` refuses, a host context already shut down, or a thread that
-/// could not be created, each before any effect.
+/// A host context already shut down, or no random session tag, each before
+/// any effect.
 #[allow(
     dead_code,
-    reason = "the server step (2.3) composes it; tests drive it now"
+    reason = "its production constructor, stream::serve_stream, is the transport candidate's (plan step 2.3g1) and is first called by the accept loop of step 2.3i; serve_in_process is test support"
 )]
-pub(crate) fn serve_in_process(
+pub(crate) fn session_service(
     dispatch: Arc<dyn Dispatch>,
+    log: Arc<dyn OperationLog>,
     root: PathBuf,
     host: &HostContext,
     limits: Limits,
-) -> ModelResult<ServedChannel> {
-    let channel_limits = validate_limits(&limits)?;
+    sink: Arc<dyn ReplySink>,
+    opened: bool,
+) -> ModelResult<Service<ServedPorts>> {
     if host.is_shut_down() {
         return Err(ModelError::new(
             ErrorCode::InvalidRequest,
             "the host context has been shut down",
         ));
     }
-    let (client, host_end) = pair(channel_limits);
-    let host_end = Arc::new(host_end);
-    let sink = Arc::clone(&host_end) as Arc<dyn ReplySink>;
     let session = Arc::new(ServedSession {
         root,
         spools: Arc::new(Spools::new(
@@ -552,34 +719,89 @@ pub(crate) fn serve_in_process(
         )),
         members: host.members().clone(),
     });
-    let ports = ServedPorts { dispatch };
-    let service = Service::new(ports, session, sink, limits, host.detached(), true);
-    service
-        .start()
-        .map_err(|_| ModelError::new(ErrorCode::InternalError, "no session thread could start"))?;
-    let reader_service = service.clone();
-    std::thread::Builder::new()
-        .name("gwz-session-reader".into())
-        .spawn(move || {
-            loop {
-                let frame = match host_end.recv() {
-                    Ok(frame) => frame,
-                    Err(_) => {
-                        reader_service.channel_closed(Ending::Channel);
-                        return;
+    let ports = ServedPorts { dispatch, log };
+    Ok(Service::new(
+        ports,
+        session,
+        sink,
+        limits,
+        host.detached(),
+        opened,
+    ))
+}
+
+cfg_if::cfg_if! {
+    // The in-process session: test support until the in-process CLI
+    // sessions of Phase 7 (lane owner, 2026-11-03, at step 2.3g's design
+    // stop). A byte stream is served by `stream::serve_stream`.
+    if #[cfg(test)] {
+        use gwz_session_channel::{InProcessEnd, pair};
+        use gwz_session_contract::{FrameSink, FrameSource};
+        use gwz_session_host::validate_limits;
+
+        /// A served session over the in-process carrier: the client's end and the
+        /// service, whose reader thread routes the client's frames.
+        pub(crate) struct ServedChannel {
+            pub(crate) client: InProcessEnd,
+            pub(crate) service: Service<ServedPorts>,
+        }
+
+        /// A log that keeps nothing: the in-process session's.
+        struct NoLog;
+
+        impl OperationLog for NoLog {
+            fn ended(&self, _entry: Logged) {}
+
+            fn session_ended(&self, _end: SessionEnded) {}
+        }
+
+        /// Serves one session of the workspace at `root` over an in-process pair,
+        /// with `dispatch` running its handlers and `host`'s detached-worker record.
+        /// The in-process session is open at once: `open` is its handshake.
+        ///
+        /// # Errors
+        ///
+        /// Limits `open` refuses, a host context already shut down, or a thread that
+        /// could not be created, each before any effect.
+        pub(crate) fn serve_in_process(
+            dispatch: Arc<dyn Dispatch>,
+            root: PathBuf,
+            host: &HostContext,
+            limits: Limits,
+        ) -> ModelResult<ServedChannel> {
+            let channel_limits = validate_limits(&limits)?;
+            let (client, host_end) = pair(channel_limits);
+            let host_end = Arc::new(host_end);
+            let sink = Arc::clone(&host_end) as Arc<dyn ReplySink>;
+            let service = session_service(dispatch, Arc::new(NoLog), root, host, limits, sink, true)?;
+            service
+                .start()
+                .map_err(|_| ModelError::new(ErrorCode::InternalError, "no session thread could start"))?;
+            let reader_service = service.clone();
+            std::thread::Builder::new()
+                .name("gwz-session-reader".into())
+                .spawn(move || {
+                    loop {
+                        let frame = match host_end.recv() {
+                            Ok(frame) => frame,
+                            Err(_) => {
+                                reader_service.channel_closed(Ending::Channel);
+                                return;
+                            }
+                        };
+                        // The in-process adapter carries tags 1 to 3 only; step 2.1's
+                        // router, which owns tags 16 and 17, is a byte stream's.
+                        if reader_service.route(&frame).is_err() {
+                            host_end.close();
+                            reader_service.channel_closed(Ending::Protocol);
+                            return;
+                        }
                     }
-                };
-                // The in-process adapter carries tags 1 to 3 only; step 2.1's
-                // router, which owns tags 16 and 17, is a byte stream's.
-                if reader_service.route(&frame).is_err() {
-                    host_end.close();
-                    reader_service.channel_closed(Ending::Protocol);
-                    return;
-                }
-            }
-        })
-        .map_err(|_| ModelError::new(ErrorCode::InternalError, "no session reader could start"))?;
-    Ok(ServedChannel { client, service })
+                })
+                .map_err(|_| ModelError::new(ErrorCode::InternalError, "no session reader could start"))?;
+            Ok(ServedChannel { client, service })
+        }
+    }
 }
 
 /// A session's own prefix of the log ids it issues, from the operating

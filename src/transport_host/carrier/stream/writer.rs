@@ -31,8 +31,12 @@ use std::{
 /// How long an end that has announced its close waits for its peer to answer by closing.
 const LINGER: Duration = Duration::from_secs(2);
 
-/// The most bytes the writer's queue holds, a single larger frame aside.
+/// The most bytes the writer's queue holds for the data lane, a single larger frame aside.
 pub(crate) const QUEUE_BYTES: usize = 8 * 1024 * 1024;
+
+/// The bytes above [`QUEUE_BYTES`] that only the control lane may use: data bytes never keep a control frame from being
+/// accepted, as the control reserve's frame count keeps data frames from it.
+pub(crate) const CONTROL_QUEUE_BYTES: usize = 1024 * 1024;
 
 /// The instant a byte was last accepted by the stream, as milliseconds from the carrier's start.
 pub(super) struct Progress {
@@ -81,8 +85,9 @@ impl<W: Write> Write for Counting<W> {
 }
 
 impl Core {
-    /// Queues `frame` for the writer on `lane`, or says why not. The lane's bound is its own: the control reserve is
-    /// never used by data.
+    /// Queues `frame` for the writer on `lane`, or says why not: `Full` for a lane at its frame count, `Pressed` for a
+    /// queue whose bytes have no room for the frame (room comes back as the writer takes frames: [`Core::room`]). The
+    /// lane's bounds are its own: the control reserve, of frames and of bytes, is never used by data.
     pub(super) fn admit(
         &self,
         state: &mut State,
@@ -94,10 +99,15 @@ impl Core {
             return Err(Admission::Closed(frame, reason));
         }
         let bytes = frame.size();
-        if state.out_lanes[lane_index(lane)] >= self.limits.capacity(lane)
-            || !state.fits_out(bytes, QUEUE_BYTES)
-        {
+        if state.out_lanes[lane_index(lane)] >= self.limits.capacity(lane) {
             return Err(Admission::Full(frame));
+        }
+        let limit = match lane {
+            Lane::Data => QUEUE_BYTES,
+            Lane::Control => QUEUE_BYTES + CONTROL_QUEUE_BYTES,
+        };
+        if !state.fits_out(bytes, limit) {
+            return Err(Admission::Pressed(frame));
         }
         if !state.busy() {
             // The stall bound counts from the moment there is work, not from the last byte of an earlier burst.
@@ -136,6 +146,7 @@ impl Core {
         self.out_ready.notify_all();
         self.in_ready.notify_all();
         self.watch_ready.notify_all();
+        self.room.notify_all();
         for waker in wakers {
             waker.wake();
         }
@@ -194,6 +205,7 @@ impl Core {
         self.out_ready.notify_all();
         self.in_ready.notify_all();
         self.watch_ready.notify_all();
+        self.room.notify_all();
         for waker in wakers {
             waker.wake();
         }
@@ -254,6 +266,8 @@ pub(super) fn write_loop(inner: &Inner) {
                 state.out_bytes -= outgoing.frame.size();
                 state.out_lanes[lane_index(outgoing.lane)] -= 1;
                 state.writing = true;
+                // The queue has room again for a paced sender.
+                core.room.notify_all();
                 break Some(outgoing);
             }
             // An ending that waits for the reader (the peer stopped listening but may still be sending) is not yet
