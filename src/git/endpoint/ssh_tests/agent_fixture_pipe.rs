@@ -18,7 +18,11 @@
 //! **Scripted behaviour.** [`Fault`]s are one-shot, consumed by the next sign request: the reply delivered in
 //! pieces (1 byte, then 2, then the rest), a stall (no reply, until the client leaves), a vanishing pipe (the
 //! agent closes the connection without a reply) and a damaged signature (the four shapes of the Unix fixture).
-//! The agent serves one client after another; it records every request and whether the client left.
+//! The agent serves one client after another (a second client finds the pipe busy until the first has left), which the
+//! busy-pipe rows of the agent client depend on; `start_side_by_side` serves its clients each on a pipe instance of
+//! its own, as a real agent's pipe does, for the rows where one binding's proof waits for a slow agent while another's
+//! must reach it. It records every request and whether a client left.
+use super::hold_gate::HoldGate;
 use crate::git::endpoint::{agent_client::Channel, agent_job::Control, ssh_fixture};
 use std::{
     fs::{File, OpenOptions},
@@ -39,7 +43,8 @@ use windows_sys::Win32::{
     Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile},
     System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
-        PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
+        PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        PeekNamedPipe,
     },
 };
 
@@ -116,6 +121,8 @@ struct Shared {
     entries: Vec<(Identity, Behavior)>,
     requests: Mutex<Vec<Request>>,
     fault: Mutex<Option<Fault>>,
+    /// The hold on the next sign reply (`hold_next`).
+    hold: HoldGate,
     left: AtomicUsize,
     stop: AtomicBool,
     malformed_sent: AtomicBool,
@@ -147,35 +154,38 @@ impl PipeAgent {
         Self::start_observing(name, entries, |_| {})
     }
 
+    /// An agent that serves its clients side by side, each on a pipe instance of its own.
+    pub(crate) fn start_side_by_side(
+        name: &str,
+        entries: Vec<(Identity, Behavior)>,
+    ) -> io::Result<Self> {
+        Self::begin(name, entries, true, |_| {})
+    }
+
     pub(crate) fn start_observing(
         name: &str,
         entries: Vec<(Identity, Behavior)>,
+        observe: impl FnMut(Stage),
+    ) -> io::Result<Self> {
+        Self::begin(name, entries, false, observe)
+    }
+
+    fn begin(
+        name: &str,
+        entries: Vec<(Identity, Behavior)>,
+        side_by_side: bool,
         mut observe: impl FnMut(Stage),
     ) -> io::Result<Self> {
         let wide: Vec<u16> = std::ffi::OsStr::new(name)
             .encode_wide()
             .chain([0])
             .collect();
-        let handle = unsafe {
-            CreateNamedPipeW(
-                wide.as_ptr(),
-                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                1,
-                65_536,
-                65_536,
-                0,
-                ptr::null(),
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            return Err(io::Error::last_os_error());
-        }
-        let pipe = Pipe(handle);
+        let pipe = create_instance(&wide, true, side_by_side)?;
         let shared = Arc::new(Shared {
             entries,
             requests: Mutex::new(Vec::new()),
             fault: Mutex::new(None),
+            hold: HoldGate::default(),
             left: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
             malformed_sent: AtomicBool::new(false),
@@ -189,7 +199,9 @@ impl PipeAgent {
         };
         observe(Stage::PipeCreated);
         let (listening, started) = mpsc::channel();
-        agent.worker = Some(thread::spawn(move || serve(pipe, &shared, listening)));
+        agent.worker = Some(thread::spawn(move || {
+            serve(pipe, &wide, side_by_side, &shared, listening)
+        }));
         let _ = started.recv_timeout(Duration::from_secs(30));
         observe(Stage::Serving);
         Ok(agent)
@@ -217,6 +229,23 @@ impl PipeAgent {
     /// Arranges for the next sign request (or, for [`Fault::Chunked`], the next request) to meet `fault`.
     pub(crate) fn script(&self, fault: Fault) {
         *self.shared.fault.lock().unwrap() = Some(fault);
+    }
+
+    /// The next sign request is answered only after `release_hold`, however long that is: the hold ends when the
+    /// row says so, not when a clock does (`Fault::Delay`). It is not a fault: the request that is held has taken
+    /// the fault scripted before it, and a fault scripted after it (`Refuse`) is the next sign request's.
+    pub(crate) fn hold_next(&self) {
+        self.shared.hold.arm();
+    }
+
+    /// How many replies the hold has kept: one once the armed request is held back.
+    pub(crate) fn held(&self) -> usize {
+        self.shared.hold.reached()
+    }
+
+    /// Lets the held reply go.
+    pub(crate) fn release_hold(&self) {
+        self.shared.hold.release();
     }
 
     /// Waits for a client to leave, since the last time one was waited for.
@@ -255,6 +284,7 @@ impl PipeAgent {
 
 impl Drop for PipeAgent {
     fn drop(&mut self) {
+        self.shared.hold.release();
         self.shared.stop.store(true, Ordering::SeqCst);
         // A worker waiting for a client wakes for this one, and sees the flag.
         let _ = PipeChannel::open(&self.name);
@@ -267,10 +297,74 @@ impl Drop for PipeAgent {
     }
 }
 
-fn serve(pipe: Pipe, shared: &Shared, listening: mpsc::Sender<()>) {
+/// One instance of the pipe `wide` names. The first carries `FILE_FLAG_FIRST_PIPE_INSTANCE`, which refuses the name to
+/// a pipe somebody else already serves; the others join it, up to the system's limit when the agent serves its clients
+/// side by side, and none when it serves one at a time.
+fn create_instance(wide: &[u16], first: bool, side_by_side: bool) -> io::Result<Pipe> {
+    let open_mode = if first {
+        PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE
+    } else {
+        PIPE_ACCESS_DUPLEX
+    };
+    let handle = unsafe {
+        CreateNamedPipeW(
+            wide.as_ptr(),
+            open_mode,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            if side_by_side {
+                PIPE_UNLIMITED_INSTANCES
+            } else {
+                1
+            },
+            65_536,
+            65_536,
+            0,
+            ptr::null(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(Pipe(handle))
+}
+
+/// One client's conversation on `pipe`, and its end; the pipe is free for the next client.
+fn serve_client(pipe: Pipe, shared: &Shared) -> Pipe {
+    converse(&pipe, shared);
+    shared.notes.lock().unwrap().push("client left".into());
+    shared.left.fetch_add(1, Ordering::SeqCst);
+    unsafe { DisconnectNamedPipe(pipe.0) };
+    pipe
+}
+
+fn serve(
+    first: Pipe,
+    wide: &[u16],
+    side_by_side: bool,
+    shared: &Arc<Shared>,
+    listening: mpsc::Sender<()>,
+) {
     // The start waits for this, so that a client that is quick does not find the thread still starting.
     let _ = listening.send(());
+    let mut clients = Vec::new();
+    let mut waiting = Some(first);
     while !shared.stop.load(Ordering::SeqCst) {
+        // Side by side, each client is served on an instance of its own, so a client that waits for a slow answer does not
+        // keep the next one from reaching the agent; the next instance is made as soon as the last one has a client.
+        let pipe = match waiting.take() {
+            Some(pipe) => pipe,
+            None => match create_instance(wide, false, side_by_side) {
+                Ok(pipe) => pipe,
+                Err(error) => {
+                    shared
+                        .notes
+                        .lock()
+                        .unwrap()
+                        .push(format!("no pipe instance for the next client: {error}"));
+                    break;
+                }
+            },
+        };
         // Waits for a client; ERROR_PIPE_CONNECTED means one connected before the call, which is a connection.
         let connected = unsafe { ConnectNamedPipe(pipe.0, ptr::null_mut()) };
         if connected == 0 {
@@ -287,6 +381,7 @@ fn serve(pipe: Pipe, shared: &Shared, listening: mpsc::Sender<()>) {
                     .push("a client came and left before the thread listened".into());
                 shared.left.fetch_add(1, Ordering::SeqCst);
                 unsafe { DisconnectNamedPipe(pipe.0) };
+                waiting = Some(pipe);
                 continue;
             }
             if error != windows_sys::Win32::Foundation::ERROR_PIPE_CONNECTED {
@@ -302,10 +397,18 @@ fn serve(pipe: Pipe, shared: &Shared, listening: mpsc::Sender<()>) {
             break;
         }
         shared.notes.lock().unwrap().push("client connected".into());
-        converse(&pipe, shared);
-        shared.notes.lock().unwrap().push("client left".into());
-        shared.left.fetch_add(1, Ordering::SeqCst);
-        unsafe { DisconnectNamedPipe(pipe.0) };
+        if side_by_side {
+            let shared = shared.clone();
+            clients.push(thread::spawn(move || {
+                serve_client(pipe, &shared);
+            }));
+        } else {
+            // One client at a time: the only instance is busy until this client has left.
+            waiting = Some(serve_client(pipe, shared));
+        }
+    }
+    for client in clients {
+        let _ = client.join();
     }
 }
 
@@ -321,7 +424,6 @@ fn converse(pipe: &Pipe, shared: &Shared) {
             return;
         };
         match fault {
-            Reply::None => {}
             Reply::Whole(reply) => write_all(pipe, &frame(&reply)),
             Reply::Chunked(reply) => {
                 let bytes = frame(&reply);
@@ -348,7 +450,6 @@ fn converse(pipe: &Pipe, shared: &Shared) {
 }
 
 enum Reply {
-    None,
     Whole(Vec<u8>),
     Chunked(Vec<u8>),
     Stall,
@@ -406,6 +507,8 @@ fn answer(body: &[u8], shared: &Shared) -> Option<Reply> {
                 Some(Fault::Delay(ms)) => thread::sleep(Duration::from_millis(ms)),
                 _ => {}
             }
+            // A hold armed for this request (`hold_next`) keeps the reply until the row lets it go.
+            shared.hold.hold_if_armed();
             let (identity, behavior) = &shared.entries[index];
             let signed = match behavior {
                 Behavior::Refuses => None,

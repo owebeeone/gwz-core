@@ -21,6 +21,7 @@ cfg_if::cfg_if! {
             process::{Child, Stdio},
             sync::{Mutex, atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering}},
         };
+        use super::hold_gate::HoldGate;
 
         /// A private `ssh-agent` holding the row's keys, and a proxy socket in front of it that counts sign requests
         /// and, when asked, damages the signature of the next one. Or the same proxy in front of another agent
@@ -32,6 +33,7 @@ cfg_if::cfg_if! {
             signs: Arc<AtomicUsize>,
             forge: Arc<AtomicU8>,
             delay: Arc<AtomicU64>,
+            hold: Arc<HoldGate>,
             withdrawn: Arc<Mutex<Vec<Vec<u8>>>>,
             stop: Arc<AtomicBool>,
             accept: Option<thread::JoinHandle<()>>,
@@ -71,18 +73,21 @@ cfg_if::cfg_if! {
                 let signs = Arc::new(AtomicUsize::new(0));
                 let forge = Arc::new(AtomicU8::new(0));
                 let delay = Arc::new(AtomicU64::new(0));
+                let hold = Arc::new(HoldGate::default());
                 let withdrawn = Arc::new(Mutex::new(Vec::new()));
                 let stop = Arc::new(AtomicBool::new(false));
                 let accept = {
-                    let (real, signs, forge, delay, withdrawn, stop) =
-                        (real.clone(), signs.clone(), forge.clone(), delay.clone(), withdrawn.clone(), stop.clone());
+                    let (real, signs, forge, delay, hold, withdrawn, stop) = (
+                        real.clone(), signs.clone(), forge.clone(), delay.clone(), hold.clone(), withdrawn.clone(), stop.clone(),
+                    );
                     thread::spawn(move || {
                         while !stop.load(Ordering::SeqCst) {
                             match listener.accept() {
                                 Ok((peer, _)) => {
-                                    let (real, signs, forge, delay, withdrawn) =
-                                        (real.clone(), signs.clone(), forge.clone(), delay.clone(), withdrawn.clone());
-                                    thread::spawn(move || relay(peer, &real, &signs, &forge, &delay, &withdrawn));
+                                    let (real, signs, forge, delay, hold, withdrawn) = (
+                                        real.clone(), signs.clone(), forge.clone(), delay.clone(), hold.clone(), withdrawn.clone(),
+                                    );
+                                    thread::spawn(move || relay(peer, &real, &signs, &forge, &delay, &hold, &withdrawn));
                                 }
                                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                                     thread::sleep(Duration::from_millis(2));
@@ -92,7 +97,7 @@ cfg_if::cfg_if! {
                         }
                     })
                 };
-                Self { child, real, path, signs, forge, delay, withdrawn, stop, accept: Some(accept) }
+                Self { child, real, path, signs, forge, delay, hold, withdrawn, stop, accept: Some(accept) }
             }
             pub(crate) fn source(&self) -> AgentSource {
                 AgentSource::from_path(Some(self.path.clone()))
@@ -128,12 +133,26 @@ cfg_if::cfg_if! {
             pub(crate) fn delay_next(&self, ms: u64) {
                 self.delay.store(ms, Ordering::SeqCst);
             }
+            /// The agent holds the next sign reply, after the agent behind it has answered, until `release_hold`. Unlike
+            /// `delay_next` it ends when the row says so, not when a clock does.
+            pub(crate) fn hold_next(&self) {
+                self.hold.arm();
+            }
+            /// How many replies the hold has kept: one once the armed request's reply is ready and held back.
+            pub(crate) fn held(&self) -> usize {
+                self.hold.reached()
+            }
+            /// Lets the held reply go.
+            pub(crate) fn release_hold(&self) {
+                self.hold.release();
+            }
             pub(crate) fn signs(&self) -> usize {
                 self.signs.load(Ordering::SeqCst)
             }
         }
         impl Drop for Agent {
             fn drop(&mut self) {
+                self.hold.release();
                 self.stop.store(true, Ordering::SeqCst);
                 if let Some(accept) = self.accept.take() {
                     let _ = accept.join();
@@ -174,6 +193,7 @@ cfg_if::cfg_if! {
             signs: &AtomicUsize,
             forge: &AtomicU8,
             delay: &AtomicU64,
+            hold: &HoldGate,
             withdrawn: &Mutex<Vec<Vec<u8>>>,
         ) {
             // An accepted socket inherits the listener's non-blocking mode on macOS.
@@ -206,6 +226,7 @@ cfg_if::cfg_if! {
                     if ms > 0 {
                         thread::sleep(Duration::from_millis(ms));
                     }
+                    hold.hold_if_armed();
                 }
                 if signing && response[0] == 14 {
                     match forge.swap(0, Ordering::SeqCst) {
@@ -279,7 +300,7 @@ cfg_if::cfg_if! {
                     .iter()
                     .map(|key| (Identity::from_key_file(key), Behavior::Signs))
                     .collect();
-                Self { agent: PipeAgent::start(&pipe_name(dir), entries).unwrap() }
+                Self { agent: PipeAgent::start_side_by_side(&pipe_name(dir), entries).unwrap() }
             }
             pub(crate) fn source(&self) -> AgentSource {
                 use crate::git::endpoint::agent_source::PipeName;
@@ -305,6 +326,19 @@ cfg_if::cfg_if! {
             /// The agent answers the next sign request only after `ms`.
             pub(crate) fn delay_next(&self, ms: u64) {
                 self.agent.script(Fault::Delay(ms));
+            }
+            /// The agent holds the next sign reply until `release_hold`: it ends when the row says so, not when a clock
+            /// does.
+            pub(crate) fn hold_next(&self) {
+                self.agent.hold_next();
+            }
+            /// How many replies the hold has kept: one once the armed request is held back.
+            pub(crate) fn held(&self) -> usize {
+                self.agent.held()
+            }
+            /// Lets the held reply go.
+            pub(crate) fn release_hold(&self) {
+                self.agent.release_hold();
             }
             pub(crate) fn signs(&self) -> usize {
                 self.agent

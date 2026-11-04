@@ -450,6 +450,7 @@ impl ConnectionHost {
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod connect_deadline_tests;
+        mod counting_adapter;
         mod domain_ports_tests;
         mod factory_profile_tests;
         mod https_auth_tests;

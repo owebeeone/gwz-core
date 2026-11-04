@@ -2,7 +2,7 @@
 //! and 9). Each host runs on the composition's own ports (`DriverThread`), so nothing here polls on the host's behalf:
 //! the rows wait on the host's snapshot or on the opening's readiness. The fixture's server sits behind a proxy that
 //! counts its connections and can cut them from the server's side.
-use super::ConnectionHost;
+use super::{ConnectionHost, counting_adapter::Counting};
 use crate::git::endpoint::{
     agent_auth::{Authenticator, Evidence, ReuseAuthority},
     agent_job::Supervisor,
@@ -31,7 +31,7 @@ use std::{
     pin::pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Wake, Waker},
     thread::{self, Thread},
@@ -84,6 +84,8 @@ struct FixtureFactory {
     hold: Arc<AtomicBool>,
     /// What each setup keeps for another binding's reuse (plan step 1.6): none, as a password's connection keeps none.
     evidence: Option<Arc<dyn Fn() -> Evidence + Send + Sync>>,
+    /// The `IdleClosed` reports the host has read from the adapters this makes.
+    idle_closed: Arc<AtomicUsize>,
 }
 impl EndpointFactory for FixtureFactory {
     fn create(
@@ -93,7 +95,7 @@ impl EndpointFactory for FixtureFactory {
     ) -> Result<Box<dyn EndpointAdapter>, FactoryError> {
         let (dial, hold) = (self.dial.clone(), self.hold.clone());
         let evidence = self.evidence.clone();
-        Ok(Box::new(SshAdapter::new(
+        let adapter = SshAdapter::new(
             move |origin| {
                 SetupConnector::isolated(origin, Duration::from_millis(500), move |_, _, _| {
                     let (dial, hold, evidence) = (dial.clone(), hold.clone(), evidence.clone());
@@ -121,7 +123,11 @@ impl EndpointFactory for FixtureFactory {
                 })
             },
             settings(),
-        )))
+        );
+        Ok(Box::new(Counting {
+            inner: adapter,
+            idle_closed: self.idle_closed.clone(),
+        }))
     }
 }
 
@@ -153,6 +159,7 @@ struct Case {
     proxy: Arc<CutProxy>,
     retries: DialRetries,
     hold: Arc<AtomicBool>,
+    idle_closed: Arc<AtomicUsize>,
     host: Mutex<ConnectionHost>,
     handle: HostHandle,
     /// The `known_hosts` file the connections' reuse proofs read, when they keep evidence.
@@ -235,10 +242,12 @@ impl Case {
         let proxy = Arc::new(CutProxy::start(fixture.port));
         let retries = DialRetries::default();
         let hold = Arc::new(AtomicBool::new(false));
+        let idle_closed = Arc::new(AtomicUsize::new(0));
         let factory = FixtureFactory {
             dial: Arc::new(fixture.dialer_counting(proxy.port, retries.clone())),
             hold: hold.clone(),
             evidence: evidence_for,
+            idle_closed: idle_closed.clone(),
         };
         let host = ConnectionHost::build(
             Arc::new(factory),
@@ -253,10 +262,15 @@ impl Case {
             proxy,
             retries,
             hold,
+            idle_closed,
             host: Mutex::new(host),
             handle,
             _known_hosts: dir,
         }
+    }
+    /// The connections the host has read as ended for an idle loss or a failed proof (`IdleClosed`).
+    fn idle_closed(&self) -> usize {
+        self.idle_closed.load(Ordering::SeqCst)
     }
     /// Sessions the proxy carried (less the connections a dial abandoned and replaced).
     fn sessions(&self) -> usize {
@@ -874,29 +888,37 @@ fn p1_int_rem_trust_is_rechecked_under_the_host_as_the_url_wrote_it() {
 
 #[test]
 fn p1_int_rem_a_failed_proof_retires_no_sibling_whose_own_proof_is_running() {
-    // Code P3-2 = State P3-2: A leaves S1 and S2. B leases one and its proof signs, the answer held back; the agent then
-    // withdraws the key and C's proof of the other is refused, which retires the idle connections of that key. The one
-    // B's proof is running on is not retired: B's proof passes and B is served by it, C by a connection of its own.
+    // Code P3-2 = State P3-2: A leaves S1 and S2. B leases one and its proof signs, the agent holding the answer back;
+    // the agent then withdraws the key and C's proof of the other is refused, which retires the idle connections of that
+    // key. The one B's proof is running on is not retired: B's proof passes and B is served by it, C by a connection of
+    // its own. The agent holds B's answer until C has been served, whatever the clock says (finding F19: a timed delay
+    // let B's proof end first on a slow host, and a pipe agent that served one client at a time ran C's proof only after
+    // B's, so the sibling was no longer "running" when C's was refused).
     let agent = AgentKey::new();
     let case = agent.case();
     idle_after_a(&case, 2);
-    agent.agent.delay_next(1500);
+    agent.agent.hold_next();
     let b = case.operation("op-b");
     let wait_b = b.open(case.spec()).unwrap().wait();
-    wait_for("B's proof reached the agent", || agent.agent.signs() == 1);
-    // B's request has been answered by the agent; only the proxy holds the reply back.
-    thread::sleep(Duration::from_millis(150));
+    // B's request has been answered by the agent behind the proxy; only the proxy holds the reply back, so withdrawing
+    // the key now cannot change B's answer.
+    wait_for("B's proof is held at the agent", || agent.agent.held() == 1);
     agent.agent.withdraw(&agent.key);
     let c = case.operation("op-c");
     let mut exchange_c = case.exchange(&c);
     assert!(is_advertisement(&advertisement(&mut exchange_c).unwrap()));
     block_on(exchange_c.finish());
+    agent.agent.release_hold();
     let mut exchange_b = block_on(wait_b).unwrap();
     assert!(is_advertisement(&advertisement(&mut exchange_b).unwrap()));
     block_on(exchange_b.finish());
     assert_eq!(case.sessions(), 3, "A's two, and C's own");
     block_on(b.finish());
     block_on(c.finish());
+    // C's refusal retired nothing: A's two connections were never reported ended, so B was served by the one its proof ran
+    // on. Had C's refusal retired it, B would have asked again and been served by C's connection (B's proof of the key
+    // had passed), and the session count above would not have told.
+    assert_eq!(case.idle_closed(), 0, "no connection was retired");
     assert!(case.close());
 }
 

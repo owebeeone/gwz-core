@@ -41,6 +41,7 @@ mod background_close;
 mod channel;
 mod cleanup_capacity;
 mod encrypted_key;
+mod hold_gate;
 mod host_case;
 mod idle_loss;
 mod idle_loss_budget;
