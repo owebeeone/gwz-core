@@ -43,7 +43,10 @@ mod client;
 mod dial;
 mod host;
 
-pub(crate) use body::{Action, BodyFault, Control, Hello, OpenRequest, Opened, State};
+pub(crate) use body::{
+    Action, BodyFault, Control, Hello, OpenRequest, Opened, SESSION_LIMIT_KEYS, State,
+    decode_session_limits,
+};
 pub(crate) use client::{
     Cause, ClientConfig, ClientFault, ClientOutcome, Intent, Stage, Unavailable,
     run as client_handshake,

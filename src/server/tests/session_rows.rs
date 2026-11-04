@@ -67,6 +67,8 @@ pub(super) struct Seen {
     gate_refused: bool,
     /// A handler waiting on its token saw it cancelled.
     pub(super) cancel_seen: bool,
+    /// The row has released every `deaf-` handler.
+    released: bool,
 }
 
 #[derive(Default)]
@@ -81,6 +83,11 @@ impl Script {
         self.changed.notify_all();
     }
 
+    /// Lets every `deaf-` handler return.
+    pub(super) fn release(&self) {
+        self.note(|seen| seen.released = true);
+    }
+
     /// Waits until `check` holds of what was seen; fails naming `what` at the row's bound.
     pub(super) fn wait(&self, what: &str, check: impl Fn(&Seen) -> bool) {
         let (seen, _) = self
@@ -92,7 +99,8 @@ impl Script {
 }
 
 /// `fetch` only, by its request ID: `net-` waits on its token as a network exchange does; `local-` is a local phase,
-/// which only crosses its gate and never reads its token; any other answers at once.
+/// which only crosses its gate and never reads its token; `deaf-` notes its cancel but runs on until the row releases
+/// it ([`Script::release`]); any other answers at once.
 struct RowDispatch {
     script: Arc<Script>,
 }
@@ -135,6 +143,25 @@ impl Dispatch for RowDispatch {
             return Err(ModelError::new(
                 ErrorCode::Cancelled,
                 "the fetch saw its cancel",
+            ));
+        }
+        if id.starts_with("deaf-") {
+            let mut seen = self.script.seen.lock().unwrap();
+            while !seen.released && Instant::now() < deadline {
+                if worker.token().is_cancelled() && !seen.cancel_seen {
+                    seen.cancel_seen = true;
+                    self.script.changed.notify_all();
+                }
+                seen = self
+                    .script
+                    .changed
+                    .wait_timeout(seen, Duration::from_millis(5))
+                    .unwrap()
+                    .0;
+            }
+            return Err(ModelError::new(
+                ErrorCode::Cancelled,
+                "the fetch ran on past its cancel",
             ));
         }
         if id.starts_with("local-") {
@@ -338,7 +365,7 @@ impl Host {
     pub(super) fn serve(
         &self,
         carrier: Arc<StreamCarrier>,
-        outer: &mut Admit,
+        outer: &mut dyn Hooks,
     ) -> Result<Served, ServeFault> {
         let parts = SessionParts {
             dispatch: Arc::new(RowDispatch {
