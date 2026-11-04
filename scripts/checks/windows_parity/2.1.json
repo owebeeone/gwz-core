@@ -240,12 +240,13 @@
    "path": "src/transport_host/carrier/tests/local_rows.rs",
    "kind": "gate",
    "gate": "unix",
-   "target": "arm: stmt let guard = tempfile::Builder::new",
+   "target": "arm: stmt let guard = crate::transport_host::carrier",
    "state": "platform",
    "owner": [
-    "2.1"
+    "2.1",
+    "2.3e2"
    ],
-   "appendix": "new",
+   "appendix": "new; moved by step 2.3e2 (movement-only split, or the arm's first item changed)",
    "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs",
    "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },

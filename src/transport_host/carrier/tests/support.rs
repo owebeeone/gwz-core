@@ -357,7 +357,7 @@ pub(crate) fn bind_listener(
                 let mut random = [0u8; 8];
                 getrandom::fill(&mut random).expect("random bytes");
                 let name = format!("ws-{:016x}", u64::from_le_bytes(random));
-                match LocalListener::bind_at(dir.path(), &name, policy.clone(), limits) {
+                match bind_path(&dir.path().join(name), policy.clone(), limits) {
                     Err(LocalRefusal::NameTaken) => {}
                     other => return other,
                 }
@@ -365,6 +365,37 @@ pub(crate) fn bind_listener(
             Err(LocalRefusal::NameTaken)
         } else {
             LocalListener::bind(dir, policy, limits)
+        }
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        /// The rows' bind of the socket `path`, through a walk under a gate of the row's own (`local::walk_to`), as the
+        /// server binds (plan 2.3e2).
+        pub(crate) fn bind_path(
+            path: &std::path::Path,
+            policy: super::super::local::PeerPolicy,
+            limits: CarrierLimits,
+        ) -> Result<super::super::local::LocalListener, super::super::local::LocalRefusal> {
+            use super::super::local::{LocalAddress, LocalListener, row_gate, walk_to};
+            let gate = row_gate();
+            LocalListener::bind(walk_to(&LocalAddress::from_path(path), &gate)?, policy, limits)
+        }
+
+        /// A temporary directory for a row's sockets, on a mount the walk accepts: on macOS `/private/tmp` on the data
+        /// volume, not the temporary directory, which may be a RAM disk mounted with `MNT_IGNORE_OWNERSHIP` (the lanes'
+        /// `/Volumes/gwztmp` is), where the walk refuses a socket's directory; elsewhere the temporary directory.
+        pub(crate) fn socket_tempdir(prefix: &str) -> tempfile::TempDir {
+            let mut builder = tempfile::Builder::new();
+            builder.prefix(prefix);
+            cfg_if::cfg_if! {
+                if #[cfg(target_vendor = "apple")] {
+                    builder.tempdir_in("/private/tmp").expect("tempdir")
+                } else {
+                    builder.tempdir().expect("tempdir")
+                }
+            }
         }
     }
 }

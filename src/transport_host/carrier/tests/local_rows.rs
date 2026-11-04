@@ -26,7 +26,7 @@ pub(super) struct Dir {
 pub(super) fn dir() -> Dir {
     cfg_if::cfg_if! {
         if #[cfg(unix)] {
-            let guard = tempfile::Builder::new().prefix("gwz").tempdir().expect("tempdir");
+            let guard = crate::transport_host::carrier::tests::support::socket_tempdir("gwz");
             std::fs::set_permissions(guard.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
             let runtime = RuntimeDir::at(guard.path()).expect("a private directory");
             Dir { runtime, _guard: Some(guard) }
@@ -639,7 +639,7 @@ mod unix {
 
     #[test]
     fn a_directory_too_deep_for_the_field_makes_bind_refuse_before_creating_anything() {
-        let base = tempfile::tempdir().unwrap();
+        let base = crate::transport_host::carrier::tests::support::socket_tempdir("gwz");
         let mut deep = base.path().to_path_buf();
         while deep.as_os_str().len() < SUN_PATH_MAX {
             deep.push("deepdir-xxxxxxxxxxxx");

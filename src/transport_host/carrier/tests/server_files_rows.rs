@@ -17,20 +17,23 @@ use std::{
 /// A private directory for the server's files, and a workspace root.
 pub(super) struct Fixture {
     runtime: RuntimeDir,
-    dir: PathBuf,
+    pub(super) dir: PathBuf,
     root: PathBuf,
     _guards: [tempfile::TempDir; 2],
 }
 
 pub(super) fn fixture() -> Fixture {
-    let files = tempfile::Builder::new()
-        .prefix("gwz")
-        .tempdir()
-        .expect("tempdir");
-    let workspace = tempfile::Builder::new()
-        .prefix("gwz-ws")
-        .tempdir()
-        .expect("tempdir");
+    cfg_if::cfg_if! {
+        if #[cfg(unix)] {
+            // The server walks its socket's directory, which the walk refuses on macOS's lanes' RAM disk (plan 2.3e2).
+            // The workspace on the same device, for the rows that plant a hard link to a workspace file.
+            let files = super::support::socket_tempdir("gwz");
+            let workspace = super::support::socket_tempdir("gwz-ws");
+        } else {
+            let files = tempfile::Builder::new().prefix("gwz").tempdir().expect("tempdir");
+            let workspace = tempfile::Builder::new().prefix("gwz-ws").tempdir().expect("tempdir");
+        }
+    }
     cfg_if::cfg_if! {
         if #[cfg(unix)] {
             std::fs::set_permissions(files.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
@@ -47,7 +50,7 @@ pub(super) fn fixture() -> Fixture {
 }
 
 impl Fixture {
-    fn key(&self) -> ServerKey {
+    pub(super) fn key(&self) -> ServerKey {
         server_key(&self.root)
     }
 
@@ -65,10 +68,7 @@ impl Fixture {
     }
 
     pub(super) fn start(&self) -> ServerListener {
-        self.claim()
-            .expect("claim")
-            .bind(policy(), CarrierLimits::DEFAULT)
-            .expect("bind")
+        self.claim().expect("claim").bind_row().expect("bind")
     }
 
     fn record(&self) -> Record {
@@ -82,6 +82,24 @@ fn server_key(root: &Path) -> ServerKey {
 
 /// The stale test's connection bound in the rows: short, so that a row that waits for it is quick.
 const BOUND: Duration = Duration::from_millis(300);
+
+/// A claim's bind as the rows make it: under a gate of the row's own on Linux and macOS (plan 2.3e2: the server binds
+/// through the walk, which the process's gate is lent to); Windows has no walk.
+pub(super) trait RowBind {
+    fn bind_row(self) -> Result<ServerListener, FilesRefusal>;
+}
+
+impl RowBind for Claim {
+    fn bind_row(self) -> Result<ServerListener, FilesRefusal> {
+        cfg_if::cfg_if! {
+            if #[cfg(unix)] {
+                self.bind(&super::super::local::row_gate(), policy(), CarrierLimits::DEFAULT)
+            } else {
+                self.bind(policy(), CarrierLimits::DEFAULT)
+            }
+        }
+    }
+}
 
 fn policy() -> PeerPolicy {
     PeerPolicy::current_user().unwrap()
@@ -240,11 +258,9 @@ fn a_hard_link_planted_at_the_lock_or_the_log_is_refused_and_its_target_untouche
         let target = fixture.root.join("id_ed25519");
         private_file(&target, b"PRIVATE KEY BYTES");
         std::fs::hard_link(&target, fixture.lock()).unwrap();
-        let refused = fixture.claim().map(|claim| {
-            claim
-                .bind(policy(), CarrierLimits::DEFAULT)
-                .map(ServerListener::close)
-        });
+        let refused = fixture
+            .claim()
+            .map(|claim| claim.bind_row().map(ServerListener::close));
         assert!(
             matches!(refused, Err(FilesRefusal::File { ref path, fault: FileFault::HardLink }) if *path == fixture.lock()),
             "a hard link at the lock was used: {:?}",
@@ -360,7 +376,7 @@ fn workspace() -> tempfile::TempDir {
 fn start_keyed(fixture: &Fixture, keys: Keys) -> ServerListener {
     server_files::claim_keyed(&fixture.runtime, keys, None, BOUND)
         .expect("claim")
-        .bind(policy(), CarrierLimits::DEFAULT)
+        .bind_row()
         .expect("bind")
 }
 
@@ -697,7 +713,7 @@ cfg_if::cfg_if! {
                 std::fs::set_permissions(fixture.lock(), std::fs::Permissions::from_mode(0o600)).unwrap();
                 let claim = fixture.claim().expect("the next start recovers");
                 assert!(claim.previous().names(&address), "{:?}", claim.previous());
-                let server = claim.bind(policy(), CarrierLimits::DEFAULT).expect("bind over the stale socket");
+                let server = claim.bind_row().expect("bind over the stale socket");
                 assert_eq!(server.address().path(), address);
                 server.close();
             });
@@ -709,7 +725,7 @@ cfg_if::cfg_if! {
             let claim = fixture.claim().expect("claim");
             // Something takes the name between the stale test and the bind.
             std::fs::write(socket_at(&fixture), b"").unwrap();
-            assert!(matches!(claim.bind(policy(), CarrierLimits::DEFAULT), Err(FilesRefusal::Bind(_))));
+            assert!(matches!(claim.bind_row(), Err(FilesRefusal::Bind(_))));
             assert_eq!(fixture.record(), Record::None);
         }
 
@@ -838,12 +854,11 @@ cfg_if::cfg_if! {
         #[test]
         fn a_listener_leaves_a_socket_another_server_bound_at_its_name() {
             let fixture = fixture();
-            let first = LocalListener::bind_at(&fixture.dir, "ws-0000000000000001", policy(), CarrierLimits::DEFAULT)
-                .unwrap();
+            let name = fixture.dir.join("ws-0000000000000001");
+            let first = super::support::bind_path(&name, policy(), CarrierLimits::DEFAULT).unwrap();
             let path = first.address().path().to_path_buf();
             std::fs::remove_file(&path).unwrap();
-            let second = LocalListener::bind_at(&fixture.dir, "ws-0000000000000001", policy(), CarrierLimits::DEFAULT)
-                .unwrap();
+            let second = super::support::bind_path(&name, policy(), CarrierLimits::DEFAULT).unwrap();
             drop(first);
             assert!(std::fs::symlink_metadata(&path).is_ok(), "the first listener removed the second's socket");
             drop(second);
@@ -884,7 +899,7 @@ cfg_if::cfg_if! {
             let fixture = fixture();
             let claim = fixture.claim().expect("claim");
             assert_eq!(fixture.record(), Record::None, "a record before the pipe exists");
-            let server = claim.bind(policy(), CarrierLimits::DEFAULT).expect("bind");
+            let server = claim.bind_row().expect("bind");
             let Record::Complete(record) = fixture.record() else {
                 panic!("no record after the bind");
             };
@@ -914,7 +929,7 @@ cfg_if::cfg_if! {
             let runtime = &files.runtime;
             let first = server_files::claim_within(runtime, temp.path(), None, BOUND)
                 .unwrap()
-                .bind(policy(), CarrierLimits::DEFAULT)
+                .bind_row()
                 .unwrap();
             match server_files::claim_within(runtime, &firmlink, None, BOUND) {
                 Err(FilesRefusal::Held { lock, record: Record::Complete(record) }) => {

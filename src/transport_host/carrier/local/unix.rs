@@ -7,9 +7,11 @@ use super::super::{
 use super::{
     Accepted, DirectoryFault, LocalRefusal, PeerIdentity, PeerPolicy, PeerRefusal, Principal,
     Relation, RuntimeEnv, StreamCarrier,
+    address::{BoundSocket, Kind, UseError, Walk, WalkRefusal},
     sandbox::{self, SandboxFindings},
 };
 use gwz_session_channel::write_frame;
+use rustix::fs::{FileType, Mode};
 use std::{
     ffi::{CStr, OsStr},
     io::{self, Read, Write},
@@ -18,7 +20,7 @@ use std::{
         fd::{AsRawFd, RawFd},
         unix::{
             ffi::OsStrExt,
-            fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
+            fs::{DirBuilderExt, MetadataExt},
             net::{UnixListener, UnixStream},
         },
     },
@@ -225,12 +227,13 @@ impl RuntimeDir {
 
 /// Where a listener listens.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LocalAddress(PathBuf);
+pub(crate) struct LocalAddress(pub(super) PathBuf);
 
 impl LocalAddress {
-    /// An address given explicitly. It is checked when it is connected to, never trusted before.
-    pub(crate) fn from_path(path: &Path) -> Self {
-        Self(path.to_path_buf())
+    /// The address a walk was made of, as parsed: a listener's address of record (never the descriptor path a Linux
+    /// bind records, `address::walk_unix`).
+    fn walked(walk: &Walk<'_>) -> Self {
+        Self(PathBuf::from(OsStr::from_bytes(walk.address())))
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -613,59 +616,66 @@ fn carrier_over(
     raw_over(stream, side, peer)?.into_carrier(limits)
 }
 
-/// A listening socket in a per-user directory, with the rule it applies to whoever connects.
+/// A listening socket at a walked address, with the rule it applies to whoever connects.
 pub(crate) struct LocalListener {
     listener: UnixListener,
     address: LocalAddress,
     policy: PeerPolicy,
     limits: CarrierLimits,
-    /// The socket file's `(st_dev, st_ino)` as bound: what `Drop` removes, and nothing else.
-    bound: (u64, u64),
+    /// The walked directory, the socket's name in it and its identity as bound: what `Drop` removes, through the
+    /// directory, and nothing else.
+    bound: BoundSocket,
 }
 
 impl LocalListener {
-    /// Listens on a new socket named `name` in the directory `dir` (the server's `ws-<key>`, `server_files`). Nothing
-    /// is created if the path would not fit; an entry already at the name is not replaced (`NameTaken`).
-    pub(crate) fn bind_at(
-        dir: &Path,
-        name: &str,
+    /// Listens on a new socket at `walk`'s address (the server's `ws-<key>` in the per-user directory, `server_files`),
+    /// bound through the walk with mode 0600 set through the walked directory (`Walk::listen`); the walk's hold ends when
+    /// this returns. An address longer than the field holds is refused (`AddressTooLong`) and an entry already at the name
+    /// is not replaced (`NameTaken`); nothing is created then. The listener's address is the address walked, as parsed.
+    pub(crate) fn bind(
+        walk: Walk<'_>,
         policy: PeerPolicy,
         limits: CarrierLimits,
     ) -> Result<Self, LocalRefusal> {
-        check_directory(dir)?;
-        let path = socket_path(dir, name)?;
-        let listener = UnixListener::bind(&path).map_err(|error| match error.kind() {
-            io::ErrorKind::AddrInUse => LocalRefusal::NameTaken,
-            _ => LocalRefusal::os("bind", &error),
-        })?;
-        let meta = match std::fs::symlink_metadata(&path) {
-            Ok(meta) => meta,
-            Err(error) => {
-                // The socket was just bound in the checked directory, so it is this listener's; without its identity
-                // `Drop` could not remove it, and a socket left with no record would refuse every later start
-                // (2.3f round 1 State S-4).
-                drop(listener);
-                let _ = std::fs::remove_file(&path);
-                return Err(LocalRefusal::os("lstat", &error));
-            }
-        };
-        let listener = Self {
+        // The path-length rule (module documentation of `super`): an address the field cannot hold is refused before
+        // anything is created, though the Linux bind through the walked directory's descriptor would fit it.
+        let length = walk.address().len();
+        if length > SUN_PATH_MAX {
+            return Err(LocalRefusal::AddressTooLong {
+                length,
+                limit: SUN_PATH_MAX,
+            });
+        }
+        // The walked directory's rule, as the client applies it (2.3e2 round 1, Code F3); a walk that ended before the
+        // socket's directory is refused by the bind itself (`Unwalked`), not judged here.
+        if walk.last() {
+            judge_directory(&walk)?;
+        }
+        let address = LocalAddress::walked(&walk);
+        let (listener, bound) =
+            walk.listen(Mode::RUSR | Mode::WUSR)
+                .map_err(|error| match error {
+                    UseError::Io(error) if error.kind() == io::ErrorKind::AddrInUse => {
+                        LocalRefusal::NameTaken
+                    }
+                    error => use_refusal("bind", error),
+                })?;
+        Ok(Self {
             listener,
-            address: LocalAddress(path),
+            address,
             policy,
             limits,
-            bound: (meta.dev(), meta.ino()),
-        };
-        std::fs::set_permissions(
-            listener.address.path(),
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .map_err(|error| LocalRefusal::os("chmod", &error))?;
-        Ok(listener)
+            bound,
+        })
     }
 
     pub(crate) fn address(&self) -> &LocalAddress {
         &self.address
+    }
+
+    /// The bound socket file's identity (device, inode), as the bind left it in the walked directory.
+    pub(crate) fn bound_id(&self) -> (libc::dev_t, libc::ino_t) {
+        self.bound.id()
     }
 
     /// Waits for a connection and judges its peer before anything is read or written. A refused connection is closed
@@ -692,14 +702,25 @@ impl AsRawFd for LocalListener {
 }
 
 impl Drop for LocalListener {
-    /// Removes the socket file while it is still the one bound: a file another server bound at the name since is left.
+    /// Removes the socket file through the walked directory while it is still the one bound: a file another server bound
+    /// at the name since is left.
     fn drop(&mut self) {
-        let path = self.address.path();
-        if let Ok(meta) = std::fs::symlink_metadata(path)
-            && (meta.dev(), meta.ino()) == self.bound
-        {
-            let _ = std::fs::remove_file(path);
-        }
+        self.bound.remove();
+    }
+}
+
+/// A walk's refusal or the operating system's answer to `call`, as the carrier reports it.
+fn use_refusal(call: &'static str, error: UseError) -> LocalRefusal {
+    match error {
+        UseError::Refused(WalkRefusal {
+            kind: Kind::TooLong { length, limit },
+            ..
+        }) => LocalRefusal::AddressTooLong { length, limit },
+        UseError::Refused(refusal) => LocalRefusal::Address {
+            unavailable: matches!(refusal.kind, Kind::NoSocket | Kind::Unwalked),
+            text: refusal.to_string(),
+        },
+        UseError::Io(error) => LocalRefusal::os(call, &error),
     }
 }
 
@@ -720,16 +741,19 @@ pub(crate) fn connect_once(path: &Path) -> io::Result<UnixStream> {
     Ok(UnixStream::from(socket))
 }
 
-/// [`connect_once`], retried while the queue is full (`WouldBlock`) until `deadline`, with a pause that doubles from a
+/// `attempt`, retried while the queue is full (`WouldBlock`) until `deadline`, with a pause that doubles from a
 /// millisecond to [`QUEUE_PAUSE_MAX`]. Any other answer ends it: a refused connect is a stale or absent listener, and
 /// is not waited for.
-pub(crate) fn connect_until(path: &Path, deadline: Instant) -> Result<UnixStream, LocalRefusal> {
+fn retry_until(
+    deadline: Instant,
+    mut attempt: impl FnMut() -> Result<UnixStream, UseError>,
+) -> Result<UnixStream, LocalRefusal> {
     let mut pause = Duration::from_millis(1);
     loop {
-        match connect_once(path) {
+        match attempt() {
             Ok(stream) => return Ok(stream),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err(UseError::Io(error)) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(UseError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
                     return Err(LocalRefusal::Timeout);
@@ -737,28 +761,53 @@ pub(crate) fn connect_until(path: &Path, deadline: Instant) -> Result<UnixStream
                 std::thread::sleep(pause.min(left));
                 pause = (pause * 2).min(QUEUE_PAUSE_MAX);
             }
-            Err(error) => return Err(LocalRefusal::os("connect", &error)),
+            Err(error) => return Err(use_refusal("connect", error)),
         }
     }
 }
 
-/// The connect of [`connect_stream`]: the socket's directory and file are checked, the connect is made before
-/// `deadline`, and the listener is verified before a byte is sent.
+/// [`connect_once`] to `path`, retried as [`retry_until`] says: the stale-socket test's probe of the per-user directory
+/// it opened (`server_files::stale`), not a client's connect, which goes through the walk ([`connect_stream`]).
+pub(crate) fn connect_until(path: &Path, deadline: Instant) -> Result<UnixStream, LocalRefusal> {
+    retry_until(deadline, || connect_once(path).map_err(UseError::Io))
+}
+
+/// The socket's directory, which the walk reached and holds: owned by this user, with no group or other bit (the
+/// per-user directory rule, split doc §4.2), judged through the walked descriptor by the client and the listener alike.
+fn judge_directory(walk: &Walk<'_>) -> Result<(), LocalRefusal> {
+    let directory = rustix::fs::fstat(walk.directory())
+        .map_err(|error| LocalRefusal::os("fstat", &error.into()))?;
+    let fault = if directory.st_uid != euid() {
+        Some(DirectoryFault::OtherOwner)
+    } else if directory.st_mode & 0o077 != 0 {
+        Some(DirectoryFault::GroupOrOtherAccess)
+    } else {
+        None
+    };
+    fault.map_or(Ok(()), |fault| Err(LocalRefusal::Directory(fault)))
+}
+
+/// The connect of [`connect_stream`]: the socket file the walk holds and its walked directory are checked through the
+/// walk's handles, the connect goes through the walk (`Walked::connect`, retried while the queue is full) before
+/// `deadline`, and the listener on that stream is verified before a byte is sent.
 fn connect_checked(
-    address: &LocalAddress,
+    walk: &Walk<'_>,
     policy: &PeerPolicy,
     deadline: Instant,
 ) -> Result<(UnixStream, PeerIdentity), LocalRefusal> {
-    let path = address.path();
-    let parent = path.parent().ok_or(LocalRefusal::NotOurSocket)?;
-    check_directory(parent)?;
-    let meta =
-        std::fs::symlink_metadata(path).map_err(|error| LocalRefusal::os("lstat", &error))?;
-    let ours = meta.file_type().is_socket() && meta.uid() == euid() && meta.mode() & 0o077 == 0;
+    // The walk's target first: a walk that did not reach the socket (a missing directory or name) is a server that is not
+    // there, and its last directory is not the socket's, so it is not judged as one (2.3e2 round 1, State F1).
+    let socket = walk
+        .socket_stat()
+        .map_err(|error| use_refusal("fstat", error))?;
+    judge_directory(walk)?;
+    let ours = FileType::from_raw_mode(socket.st_mode) == FileType::Socket
+        && socket.st_uid == euid()
+        && socket.st_mode & 0o077 == 0;
     if !ours {
         return Err(LocalRefusal::NotOurSocket);
     }
-    let stream = connect_until(path, deadline)?;
+    let stream = retry_until(deadline, || walk.connect())?;
     let peer = match check_peer(&stream, policy, Relation::ClientChecksListener) {
         Ok(peer) => peer,
         Err(refusal) => {
@@ -770,15 +819,17 @@ fn connect_checked(
     Ok((stream, peer))
 }
 
-/// Connects to `address`, verifying the listener before a byte is sent: the socket's directory and file, then the
-/// process that holds it. The result is the halves of the connection, not yet a carrier, for the client's handshake
-/// (`handshake::dial`): the carrier is built over them only once the handshake is done ([`RawConnection::into_carrier`]).
-/// The connect completes before `deadline`, which the handshake's client counts from the start of its connect.
+/// Connects through `walk`, verifying the listener before a byte is sent: the walked directory and socket file, then
+/// the process that holds the stream the walk connected. The walk, and its trigger hold, end when the connect returns.
+/// The result is the halves of the connection, not yet a carrier, for the client's handshake (`handshake::dial`): the
+/// carrier is built over them only once the handshake is done ([`RawConnection::into_carrier`]). The connect completes
+/// before `deadline`, which the handshake's client counts from the start of its connect.
 pub(crate) fn connect_stream(
-    address: &LocalAddress,
+    walk: Walk<'_>,
     policy: &PeerPolicy,
     deadline: Instant,
 ) -> Result<RawConnection, LocalRefusal> {
-    let (stream, peer) = connect_checked(address, policy, deadline)?;
+    let (stream, peer) = connect_checked(&walk, policy, deadline)?;
+    drop(walk);
     raw_over(stream, Side::Client, peer)
 }

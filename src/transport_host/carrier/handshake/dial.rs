@@ -7,7 +7,10 @@
 //! otherwise (a pipe's read has no timeout).
 use super::super::{
     CarrierLimits, StreamCarrier,
-    local::{LocalAddress, LocalRefusal, PeerIdentity, PeerPolicy, RawConnection, connect_stream},
+    local::{
+        LocalRefusal, PeerIdentity, PeerPolicy, RawConnection, Target,
+        address::SERVER_ADDRESS_REFUSED, connect_stream,
+    },
     wire::INVALID_REQUEST,
 };
 use super::{
@@ -220,6 +223,8 @@ impl DialFault {
     /// - a request that cannot be sent is `invalid_request`;
     /// - a connect that never completes, a socket that refuses or is missing, and a host that did not act as a gwz
     ///   server (a reply out of order, a stream that failed) are `server_unavailable`;
+    /// - an address the walk (or the pipe's checks) did not give a connect is `server_address_refused`, unless nothing
+    ///   answers there (a missing name), which is `server_unavailable`;
     /// - a listener this process refused is `server_listener_refused`;
     /// - any other handshake failure carries the code of its [`ClientFault`].
     pub(crate) fn code(&self) -> Option<u64> {
@@ -231,6 +236,13 @@ impl DialFault {
                 ..
             }) => Some(SERVER_UNAVAILABLE),
             DialFault::Connect(LocalRefusal::Peer(_)) => Some(SERVER_LISTENER_REFUSED),
+            DialFault::Connect(LocalRefusal::Address { unavailable, .. }) => {
+                Some(if *unavailable {
+                    SERVER_UNAVAILABLE
+                } else {
+                    SERVER_ADDRESS_REFUSED
+                })
+            }
             DialFault::Connect(_) => None,
             DialFault::Handshake(ClientFault::Protocol(_) | ClientFault::Wire(_)) => {
                 Some(SERVER_UNAVAILABLE)
@@ -240,10 +252,15 @@ impl DialFault {
     }
 }
 
-/// Connects to `address` and handshakes, all within the bound `intent` gives from the moment of the call. The
+/// Connects to `target` and handshakes, all within the bound `intent` gives from the moment of the call. The
 /// carrier is returned with the handshake's outcome; for a control exchange the host closes it next.
+///
+/// `target` is the walk of the address (Linux and macOS: `address::walk`, under the process's `NoTriggerGate`, whose
+/// hold ends when the connect returns) or the pipe name the pipe checks passed (Windows: `address::check_pipe`); only
+/// those make one, so a path the walk did not produce does not compile here: `dial(&LocalAddress::from_path(..), ..)`,
+/// the call before plan 2.3e2, is a type error (E0308), which closes 2.3e round 3 Code N3-1.
 pub(crate) fn dial(
-    address: &LocalAddress,
+    target: Target<'_>,
     policy: &PeerPolicy,
     limits: CarrierLimits,
     config: &ClientConfig,
@@ -257,7 +274,7 @@ pub(crate) fn dial(
         Intent::Open => config.bounds.open_wait,
         Intent::Control(_) => config.bounds.state_wait,
     };
-    let raw = connect_stream(address, policy, started + wait).map_err(DialFault::Connect)?;
+    let raw = connect_stream(target, policy, started + wait).map_err(DialFault::Connect)?;
     let mut wire = StreamWire::new(raw)
         .map_err(|error| DialFault::Connect(LocalRefusal::os("spawn", &error)))?;
     let mut config = config.clone();

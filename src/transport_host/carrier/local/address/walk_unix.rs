@@ -23,24 +23,38 @@
 //! something other than a link: a lookup inside a directory that passed the mount checks triggers nothing, and a link
 //! there moves the socket to another directory.
 //!
-//! **What the walk holds** ([`Walked`]): the walked directory of its last lookup, the name looked up and that
-//! component's own handle. [`Walked::place`] is a path for rows and messages only, never a connect or bind path: it can
-//! be longer than the address (`/var` reads `/private/var` on macOS) and a component can be swapped after the walk. A
-//! connect or bind goes only through the walk, which borrows what it holds for the whole call, so the descriptor a
-//! path names cannot be closed or reused meanwhile: [`Walked::connect`] (one non-blocking attempt, as
-//! `local::unix::connect_once`, for a caller that retries a full accept queue) and [`Walked::bind`]. A connect needs the
-//! walk to have ended holding the address's final component; a bind needs the final name's directory walked; anything
-//! else is refused ([`Kind::Unwalked`], [`Kind::NoSocket`], [`Kind::Directory`]), so no walk gives a target that the
-//! kernel's lookup of the address would not reach.
+//! **What the walk holds** ([`Walked`], whose fields only [`walk_with`] sets): the walked directory of its last lookup
+//! ([`Walked::directory`], for the operations relative to it that server design §4 names), the name looked up, that
+//! component's own handle, and whether the final name was reached through a link. [`Walked::place`] is a path for rows
+//! and messages only, never a connect or bind path: it can be longer than the address (`/var` reads `/private/var` on
+//! macOS) and a component can be swapped after the walk. A connect or bind goes only through the walk, which borrows
+//! what it holds for the whole call, so the descriptor a path names cannot be closed or reused meanwhile:
+//! [`Walked::connect`] (one non-blocking attempt, as `local::unix::connect_once`, for a caller that retries a full accept
+//! queue) and [`Walked::bind`], private to this module: the carrier reaches them only through a [`Walk`]. A connect
+//! needs the walk to have ended holding the address's final component; a bind needs the final name's directory walked
+//! and the final name not a link (Linux's own `bind` refuses one with `EADDRINUSE`; macOS's follows it, and the walk
+//! refuses it there too, so that the socket is always the address's own entry); anything else is refused
+//! ([`Kind::Unwalked`], [`Kind::NoSocket`], [`Kind::Directory`], [`Kind::FinalLink`]), so no walk gives a target that
+//! the kernel's lookup of the address would not reach.
 //! - Linux: `/proc/self/fd/<n>` of the socket's own `O_PATH` descriptor, and `/proc/self/fd/<n>/<name>` of the walked
 //!   directory, which reach the walked inodes without resolving the path again; without procfs at `/proc` both refuse.
 //!   The bind route spends 15 bytes and the digits of `n` before the name, so in a short directory a last component of
 //!   more than about 90 bytes passes the grammar's 107 and is refused at bind ([`Kind::TooLong`] names both lengths).
-//! - macOS: there is no `connectat`, so both go by the parsed address (which fits `sun_path`). A process that is its
-//!   own holds [`NoTrigger`] from before the walk until `connect` or `bind` returns, so that a component swapped
-//!   meanwhile cannot make it trigger a mount: the CLI around `Walked::connect` (plan 2.3k) and the serving CLI around
-//!   `Walked::bind` (plan 2.3i), never `SocketCoreBridge`, inside an application's process, which keeps the design's
-//!   residual.
+//!   Linux records that bind path as the socket's address: a listener's `local_addr()` and its clients' `peer_addr()`
+//!   read `/proc/self/fd/<n>/<name>`, a path that names another directory, or nothing, once the walk is dropped. It is
+//!   never an address of record: [`Walk::listen`]'s caller reports [`Walked::address`], and the socket is removed
+//!   through the walked directory ([`BoundSocket`]), never by a path (2.3e round 3, State S3-1).
+//! - macOS: there is no `connectat`, so both go by the parsed address (which fits `sun_path`), under [`NoTrigger`], so
+//!   that a component swapped meanwhile cannot make the process trigger a mount (the design's residual is a swap that
+//!   moves the connect or bind elsewhere; [`Walk::listen`] then finds no socket of its own in the walked directory and
+//!   refuses, and sets no mode by path).
+//!
+//! **The process's walk** ([`walk`]) takes the process's [`NoTriggerGate`], made once by the process owner and lent to
+//! every walk, and gives a [`Walk`], which holds a [`NoTrigger`] from before the walk until it is dropped: the carrier's
+//! connect (`local::unix::connect_stream`) and bind (`local::unix::LocalListener::bind`) take a `Walk`, a type only
+//! [`walk`] builds, and drop it when their connect or bind returns (plan 2.3e2). On Linux the walk triggers no mount
+//! (`O_PATH | O_NOFOLLOW`, `AT_NO_AUTOMOUNT`, the connect and bind through `/proc`), so its gate holds nothing.
+//! `SocketCoreBridge`, inside an application's process, holds no trigger (design §3); its walk is plan step 3.2's.
 //!
 //! **The probes** ([`Probe`]; the host's is chosen below by platform, the rows pass their own):
 //! - Linux: `openat(parent, name, O_PATH | O_NOFOLLOW | O_CLOEXEC)` of one component, which stops at a trigger without
@@ -54,19 +68,27 @@
 //!   `O_RDONLY` gets `EPERM` on auto_home's root); [`judge_opened`] then requires its `fgetattrlist` to show the
 //!   file-system and file IDs the probe saw, and judges its mount (`fstatfs`'s flags and type name) by
 //!   [`macos_refused_mount`]; the socket's own directory is refused on a mount that ignores ownership.
+//! - Linux, links: a link that `fs.protected_symlinks` keeps the kernel from following (in a sticky directory others
+//!   may write, owned by neither this user nor the directory's owner: [`protected_link`]) is refused, whatever the
+//!   setting, as the kernel's lookup with the usual setting would refuse it (2.3e round 3, Code N3-3).
 //!
 //! A probe that cannot complete refuses ([`Kind::Unreadable`]).
 use super::{super::unix::connect_once, Platform, SERVER_ADDRESS_REFUSED, SHOWN_ADDRESS, escape};
+use rustix::fs::{AtFlags, FileType};
 use std::{
     collections::VecDeque,
     ffi::OsStr,
     fmt, io,
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
     os::unix::{
         ffi::OsStrExt,
         net::{UnixListener, UnixStream},
     },
     path::Path,
 };
+
+mod judge;
+pub(crate) use judge::*;
 
 /// The most links a walk reads, links inside targets included (the kernels' own limits are 40 on Linux and 32 on macOS).
 pub(crate) const LINK_LIMIT: usize = 8;
@@ -117,6 +139,10 @@ pub(crate) enum Kind {
     Directory,
     /// The address goes on below a component that is not a directory (the kernel's `ENOTDIR`).
     NotDirectory,
+    /// Linux: a link `fs.protected_symlinks` keeps the kernel from following ([`protected_link`]).
+    ProtectedLink,
+    /// A bind was asked of a walk whose final name is a link: the socket would not be the address's own entry.
+    FinalLink,
     /// A connect or a bind was asked of a walk that ended before the socket's own name.
     Unwalked,
     /// A connect was asked of a walk whose last name is missing: nothing answers there.
@@ -146,6 +172,12 @@ impl fmt::Display for Kind {
             Kind::TooManyLinks => write!(f, "a link beyond the {LINK_LIMIT} a walk reads"),
             Kind::Directory => f.write_str("a directory, not a socket name"),
             Kind::NotDirectory => f.write_str("not a directory, and the address goes on below it"),
+            Kind::ProtectedLink => {
+                f.write_str("a link the kernel does not follow (fs.protected_symlinks)")
+            }
+            Kind::FinalLink => {
+                f.write_str("a link, and a socket is bound at the address's own name only")
+            }
             Kind::Unwalked => f.write_str("missing, so the socket's directory was not walked"),
             Kind::NoSocket => f.write_str("missing, so nothing answers there"),
             Kind::NoProc => f.write_str("not reachable by descriptor: /proc is not procfs"),
@@ -198,20 +230,23 @@ pub(crate) enum Place {
     Ended(Vec<u8>),
 }
 
-/// A finished walk, holding what it judged.
+/// A finished walk, holding what it judged. Its fields are private and only [`walk_with`] sets them, so no connect or
+/// bind goes to what the walk did not judge (2.3e round 3, Code N3-2).
 #[derive(Debug)]
 pub(crate) struct Walked<D, L> {
     /// The address walked, as parsed.
-    pub(crate) address: Vec<u8>,
-    pub(crate) place: Place,
+    address: Vec<u8>,
+    place: Place,
     /// The walked directory the last lookup was made in.
-    pub(crate) parent: D,
+    parent: D,
     /// The name looked up there.
-    pub(crate) name: Vec<u8>,
+    name: Vec<u8>,
     /// `name` is the socket's own name: `parent` is the socket's directory, judged by [`Probe::socket_directory`].
-    pub(crate) last: bool,
+    last: bool,
+    /// The address's final name is a link: `name` was reached through it.
+    final_link: bool,
     /// What the walk holds of `name` itself, when it exists.
-    pub(crate) held: Option<Held<L>>,
+    held: Option<Held<L>>,
 }
 
 /// Why a connect or a bind through a walk did not happen.
@@ -241,6 +276,36 @@ impl fmt::Display for UseError {
 impl std::error::Error for UseError {}
 
 impl<D, L> Walked<D, L> {
+    /// The address walked, as parsed: the address of record, in messages and in a listener's address.
+    pub(crate) fn address(&self) -> &[u8] {
+        &self.address
+    }
+
+    /// Where the walk ended (module documentation: for rows and messages only).
+    pub(crate) fn place(&self) -> &Place {
+        &self.place
+    }
+
+    /// The name the last lookup looked up.
+    pub(crate) fn name(&self) -> &[u8] {
+        &self.name
+    }
+
+    /// The name is the socket's own name, in the socket's directory.
+    pub(crate) fn last(&self) -> bool {
+        self.last
+    }
+
+    /// What the walk holds of the name, when it exists.
+    pub(crate) fn held(&self) -> Option<&Held<L>> {
+        self.held.as_ref()
+    }
+
+    /// The address's final name is a link (a bind refuses it, [`Kind::FinalLink`]).
+    pub(crate) fn final_link(&self) -> bool {
+        self.final_link
+    }
+
     /// A refusal naming where the walk ended.
     fn refusal(&self, kind: Kind) -> WalkRefusal {
         let (Place::Reached(component) | Place::Ended(component)) = &self.place;
@@ -256,6 +321,15 @@ impl<D, L> Walked<D, L> {
             return Ok(());
         }
         Err(self.refusal(Kind::Unwalked))
+    }
+
+    /// A bind needs the socket's own directory walked and the address's own final name, not a link to another.
+    fn bindable(&self) -> Result<(), WalkRefusal> {
+        self.unwalked()?;
+        if self.final_link {
+            return Err(self.refusal(Kind::FinalLink));
+        }
+        Ok(())
     }
 
     /// A connect needs the walk to have ended holding the address's final component, which is not a directory: the
@@ -298,6 +372,14 @@ impl<D, L> Walked<D, L> {
     }
 }
 
+impl<D: AsFd, L> Walked<D, L> {
+    /// The walked directory the last lookup was made in (the socket's, once [`Self::last`]): the descriptor the operations
+    /// relative to it use (server design §4: the lock, the log, the stale test, the removal; 2.3e round 3, State S3-3).
+    pub(crate) fn directory(&self) -> BorrowedFd<'_> {
+        self.parent.as_fd()
+    }
+}
+
 /// One probe of the file system, for [`walk_with`].
 pub(crate) trait Probe {
     /// A directory the walk holds.
@@ -312,12 +394,137 @@ pub(crate) trait Probe {
     fn socket_directory(&mut self, dir: &Self::Dir) -> Result<(), Kind>;
 }
 
-/// A walk with this host's probe.
-pub(crate) type HostWalked = Walked<<HostProbe as Probe>::Dir, <HostProbe as Probe>::Leaf>;
+/// A walk of this host's file system made under the process's trigger hold, which it keeps until it is dropped: the one
+/// input of the carrier's connect and bind (module documentation). Only [`walk`] makes one, and it gives no other
+/// connect or bind than its own ([`Walk::connect`], [`Walk::listen`]): the walk's raw operations are private to this
+/// module (2.3e2 round 1, Code F2 / State F4).
+#[derive(Debug)]
+pub(crate) struct Walk<'g> {
+    walked: HostWalked,
+    _hold: NoTrigger<'g>,
+}
 
-/// Walks the socket path `path` (one that passed the grammar) with this host's probe.
-pub(crate) fn walk(path: &[u8]) -> Result<HostWalked, WalkRefusal> {
-    walk_with(path, &mut HostProbe)
+/// Walks the socket path `path` (one that passed the grammar) with this host's probe, holding a [`NoTrigger`] from
+/// `gate`, the process's, from before the walk.
+pub(crate) fn walk<'g>(path: &[u8], gate: &'g NoTriggerGate) -> Result<Walk<'g>, WalkRefusal> {
+    let hold = gate.hold().map_err(|error| WalkRefusal {
+        component: b"/".to_vec(),
+        kind: unreadable("NoTrigger", &error),
+    })?;
+    let walked = walk_with(path, &mut HostProbe)?;
+    Ok(Walk {
+        walked,
+        _hold: hold,
+    })
+}
+
+fn euid() -> u32 {
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+/// What a bind through a [`Walk`] leaves its listener: the walked directory, the socket's name in it and the socket
+/// file's identity as bound. The socket is removed through it ([`Self::remove`]), never by a path.
+#[derive(Debug)]
+pub(crate) struct BoundSocket {
+    dir: OwnedFd,
+    name: Vec<u8>,
+    id: (libc::dev_t, libc::ino_t),
+}
+
+impl BoundSocket {
+    /// The entry `name` in `dir`, which must be a socket this user owns: anything else is not the bind's.
+    fn judged(dir: OwnedFd, name: Vec<u8>) -> Option<Self> {
+        let stat =
+            rustix::fs::statat(&dir, OsStr::from_bytes(&name), AtFlags::SYMLINK_NOFOLLOW).ok()?;
+        let socket =
+            FileType::from_raw_mode(stat.st_mode) == FileType::Socket && stat.st_uid == euid();
+        socket.then_some(Self {
+            dir,
+            name,
+            id: (stat.st_dev, stat.st_ino),
+        })
+    }
+
+    /// The socket file's identity as bound: device and inode.
+    pub(crate) fn id(&self) -> (libc::dev_t, libc::ino_t) {
+        self.id
+    }
+
+    /// The entry is still the socket bound.
+    fn is_bound(&self, stat: &rustix::fs::Stat) -> bool {
+        FileType::from_raw_mode(stat.st_mode) == FileType::Socket
+            && (stat.st_dev, stat.st_ino) == self.id
+    }
+
+    /// Removes the socket while its name in the walked directory is still the one bound; anything bound there since is
+    /// left.
+    pub(crate) fn remove(&self) {
+        let name = OsStr::from_bytes(&self.name);
+        if let Ok(stat) = rustix::fs::statat(&self.dir, name, AtFlags::SYMLINK_NOFOLLOW)
+            && self.is_bound(&stat)
+        {
+            let _ = rustix::fs::unlinkat(&self.dir, name, AtFlags::empty());
+        }
+    }
+}
+
+impl Walk<'_> {
+    /// The address walked, as parsed ([`Walked::address`]).
+    pub(crate) fn address(&self) -> &[u8] {
+        self.walked.address()
+    }
+
+    /// Where the walk ended ([`Walked::place`]: for rows and messages only).
+    pub(crate) fn place(&self) -> &Place {
+        self.walked.place()
+    }
+
+    /// The address's final name is a link ([`Walked::final_link`]).
+    pub(crate) fn final_link(&self) -> bool {
+        self.walked.final_link()
+    }
+
+    /// The walk reached the socket's own directory ([`Walked::last`]).
+    pub(crate) fn last(&self) -> bool {
+        self.walked.last()
+    }
+
+    /// The walked directory the last lookup was made in ([`Walked::directory`]).
+    pub(crate) fn directory(&self) -> BorrowedFd<'_> {
+        self.walked.directory()
+    }
+
+    /// The socket file the walk holds ([`Walked::socket_stat`]): a walk that did not end holding the address's final
+    /// component, which is not a directory, is refused (`Unwalked`, `NoSocket`, `Directory`).
+    pub(crate) fn socket_stat(&self) -> Result<rustix::fs::Stat, UseError> {
+        self.walked.socket_stat()
+    }
+
+    /// One non-blocking connect to the socket the walk holds ([`Walked::connect`]), under the walk's hold.
+    pub(crate) fn connect(&self) -> Result<UnixStream, UseError> {
+        self.walked.connect()
+    }
+
+    /// Binds the socket's name in the walked directory ([`Walked::bind`]) and sets its `mode` through that directory's
+    /// descriptor, never by path; the hold ends when this returns. A bind that left no socket of this user's at the name
+    /// in the walked directory (macOS: a component swapped after the walk moved the bind) is refused
+    /// ([`Kind::Changed`]), and no mode is set anywhere; a mode that cannot be set removes the socket.
+    pub(crate) fn listen(
+        self,
+        mode: rustix::fs::Mode,
+    ) -> Result<(UnixListener, BoundSocket), UseError> {
+        let listener = self.walked.bind()?;
+        let changed = self.walked.refusal(Kind::Changed);
+        let Walk { walked, _hold } = self;
+        let (dir, name) = walked.into_directory();
+        let bound = BoundSocket::judged(dir, name).ok_or(changed)?;
+        if let Err(error) = set_mode(&bound, mode) {
+            bound.remove();
+            return Err(error);
+        }
+        Ok((listener, bound))
+    }
 }
 
 /// `/` and `parts` joined.
@@ -354,6 +561,7 @@ pub(crate) fn walk_with<P: Probe>(
     let mut walked: Vec<Vec<u8>> = Vec::new();
     let mut pending: VecDeque<Vec<u8>> = components(path).collect();
     let mut links = 0;
+    let mut final_link = false;
     while let Some(name) = pending.pop_front() {
         if name == b"." {
             continue;
@@ -380,6 +588,7 @@ pub(crate) fn walk_with<P: Probe>(
         };
         let (place, held) = match seen {
             Seen::Link(target) => {
+                final_link |= last;
                 links += 1;
                 if links > LINK_LIMIT {
                     return Err(WalkRefusal {
@@ -432,6 +641,7 @@ pub(crate) fn walk_with<P: Probe>(
             parent,
             name,
             last,
+            final_link,
             held,
         });
     }
@@ -441,153 +651,9 @@ pub(crate) fn walk_with<P: Probe>(
     })
 }
 
-/// Linux `PROC_SUPER_MAGIC`.
-pub(crate) const PROC_SUPER_MAGIC: u32 = 0x9FA0;
-
-/// The Linux file-system types a walk refuses (`f_type`, magic.h v7.2 and coreutils' out-of-tree list): every
-/// automounter, network and cluster file system, and every FUSE file system, whose subtype whoever mounts it chooses.
-const LINUX_REFUSED: [(u32, &str); 25] = [
-    (0x0187, "autofs"),
-    (0x6969, "nfs"),
-    (0x517B, "smbfs"),
-    (0xFF53_4D42, "cifs"),
-    (0xFE53_4D42, "smb2"),
-    (0x5346_414F, "openafs"),
-    (0x6B41_4653, "kafs"),
-    (0x00C3_6400, "ceph"),
-    (0x0102_1997, "9p"),
-    (0x7375_7245, "coda"),
-    (0x564C, "ncp"),
-    (0x7461_636F, "ocfs2"),
-    (0x0116_1970, "gfs2"),
-    (0x2003_0528, "orangefs"),
-    (0x786F_4256, "vboxsf"),
-    (0x6573_5546, "fuse"),
-    (0x0BD0_0BD0, "lustre"),
-    (0x4750_4653, "gpfs"),
-    (0x1983_0326, "beegfs"),
-    (0xAAD7_AAEA, "panfs"),
-    (0x0131_11A8, "ibrix"),
-    (0xBEEF_DEAD, "stornext"),
-    (0x6163_6673, "acfs"),
-    (0x7C7C_6673, "prl_fs"),
-    (0xBACB_ACBC, "vmhgfs"),
-];
-
-/// The name of a refused Linux file-system type, or `None` for one a socket may sit on.
-pub(crate) fn linux_refused_type(f_type: u32) -> Option<&'static str> {
-    LINUX_REFUSED
-        .iter()
-        .find(|(magic, _)| *magic == f_type)
-        .map(|(_, name)| *name)
-}
-
-/// macOS `MNT_LOCAL`, `MNT_IGNORE_OWNERSHIP` and `MNT_AUTOMOUNTED` (`<sys/mount.h>`), so the table is judged on any host.
-pub(crate) const MNT_LOCAL: u32 = 0x0000_1000;
-pub(crate) const MNT_IGNORE_OWNERSHIP: u32 = 0x0020_0000;
-pub(crate) const MNT_AUTOMOUNTED: u32 = 0x0040_0000;
-/// macOS `DIR_MNTSTATUS_TRIGGER` (`<sys/attr.h>`) and the vnode types `VDIR` and `VLNK` (`<sys/vnode.h>`), so the
-/// probe's decisions are judged on any host.
-pub(crate) const DIR_MNTSTATUS_TRIGGER: u32 = 0x0000_0002;
-pub(crate) const VDIR: u32 = 2;
-pub(crate) const VLNK: u32 = 5;
-
-/// The macOS file-system type names a walk refuses, and the prefixes macFUSE's `fstypename=NAME` gives. The names are
-/// checked as well as the flags because macFUSE's `-o local` sets `MNT_LOCAL`.
-const MACOS_REFUSED: [&[u8]; 12] = [
-    b"autofs",
-    b"nfs",
-    b"smbfs",
-    b"afpfs",
-    b"webdav",
-    b"ftp",
-    b"acfs",
-    b"virtiofs",
-    b"fusefs",
-    b"osxfusefs",
-    b"osxfuse",
-    b"macfuse",
-];
-const MACOS_REFUSED_PREFIXES: [&[u8]; 2] = [b"macfuse_", b"osxfuse_"];
-
-/// Why a macOS mount with `flags` and type name `name` is refused, or `None` for one a socket may sit on.
-pub(crate) fn macos_refused_mount(flags: u32, name: &[u8]) -> Option<Kind> {
-    if MACOS_REFUSED.contains(&name)
-        || MACOS_REFUSED_PREFIXES
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
-    {
-        return Some(Kind::FileSystem(String::from_utf8_lossy(name).into_owned()));
-    }
-    if flags & MNT_LOCAL == 0 {
-        return Some(Kind::NotLocal);
-    }
-    if flags & MNT_AUTOMOUNTED != 0 {
-        return Some(Kind::Automounted);
-    }
-    None
-}
-
-/// What macOS's `getattrlistat` showed of one component.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MacAttributes {
-    pub(crate) fsid: [u8; 8],
-    pub(crate) fileid: u64,
-    pub(crate) objtype: u32,
-    /// `ATTR_DIR_MOUNTSTATUS`, when the call returned it.
-    pub(crate) mount_status: Option<u32>,
-}
-
-/// What the macOS probe may do next with a component.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MacNext {
-    /// A link: read it.
-    ReadLink,
-    /// Neither a link nor a directory: nothing is opened.
-    Other,
-    /// A directory that is not a trigger: open it.
-    Open,
-}
-
-/// Design §3 macOS steps 1 to 3, before anything is opened: a trigger is refused, and so is a directory whose mount
-/// status was not returned, since any `open` of a trigger mounts it.
-pub(crate) fn judge_probe(seen: &MacAttributes) -> Result<MacNext, Kind> {
-    if seen
-        .mount_status
-        .is_some_and(|status| status & DIR_MNTSTATUS_TRIGGER != 0)
-    {
-        return Err(Kind::Trigger);
-    }
-    match seen.objtype {
-        VLNK => Ok(MacNext::ReadLink),
-        VDIR if seen.mount_status.is_none() => Err(Kind::Unreadable {
-            call: "getattrlistat",
-            errno: None,
-        }),
-        VDIR => Ok(MacNext::Open),
-        _ => Ok(MacNext::Other),
-    }
-}
-
-/// Design §3 macOS step 3, after the open: the descriptor's file-system and file IDs (`opened`) must be the probe's,
-/// and its mount (`flags`, `type_name`) must pass [`macos_refused_mount`].
-pub(crate) fn judge_opened(
-    seen: &MacAttributes,
-    opened: ([u8; 8], u64),
-    flags: u32,
-    type_name: &[u8],
-) -> Result<(), Kind> {
-    if opened != (seen.fsid, seen.fileid) {
-        return Err(Kind::Changed);
-    }
-    match macos_refused_mount(flags, type_name) {
-        Some(kind) => Err(kind),
-        None => Ok(()),
-    }
-}
-
-/// The probe of this host's file system.
-pub(crate) struct HostProbe;
+/// The probe of this host's file system: private to the walk, so that only [`walk`], under a gate, walks the host
+/// (rows: `walk_host`).
+struct HostProbe;
 
 fn unreadable(call: &'static str, error: &std::io::Error) -> Kind {
     Kind::Unreadable {
@@ -598,320 +664,41 @@ fn unreadable(call: &'static str, error: &std::io::Error) -> Kind {
 
 cfg_if::cfg_if! {
     if #[cfg(any(target_os = "linux", target_os = "android"))] {
-        use rustix::fs::{AtFlags, FileType, Mode, OFlags, StatxAttributes, StatxFlags};
-        use std::os::fd::{AsRawFd, OwnedFd};
-
-        /// The grammar this host applies.
-        pub(crate) const HOST: Platform = Platform::Linux;
-
-        fn failed(call: &'static str, error: rustix::io::Errno) -> Kind {
-            unreadable(call, &error.into())
-        }
-
-        impl Probe for HostProbe {
-            type Dir = OwnedFd;
-            type Leaf = OwnedFd;
-
-            fn root(&mut self) -> Result<OwnedFd, Kind> {
-                rustix::fs::open("/", OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC, Mode::empty())
-                    .map_err(|error| failed("open", error))
-            }
-
-            fn look(&mut self, dir: &OwnedFd, name: &[u8]) -> Result<Seen<OwnedFd, OwnedFd>, Kind> {
-                let flags = OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-                let fd = match rustix::fs::openat(dir, OsStr::from_bytes(name), flags, Mode::empty()) {
-                    Ok(fd) => fd,
-                    Err(rustix::io::Errno::NOENT) => {
-                        return Ok(Seen::Missing);
-                    }
-                    Err(error) => {
-                        return Err(failed("openat", error));
-                    }
-                };
-                let at = AtFlags::EMPTY_PATH | AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT;
-                let stat = rustix::fs::statx(&fd, "", at, StatxFlags::TYPE).map_err(|error| failed("statx", error))?;
-                if stat.stx_attributes.contains(StatxAttributes::AUTOMOUNT) {
-                    return Err(Kind::Automount);
-                }
-                // `f_type` is a signed word on some targets; the magic numbers are its low 32 bits.
-                let f_type = rustix::fs::fstatfs(&fd).map_err(|error| failed("fstatfs", error))?.f_type as u32;
-                if let Some(type_name) = linux_refused_type(f_type) {
-                    return Err(Kind::FileSystem(format!("{type_name} (0x{f_type:x})")));
-                }
-                match FileType::from_raw_mode(stat.stx_mode.into()) {
-                    FileType::Symlink => {
-                        if f_type == PROC_SUPER_MAGIC {
-                            return Err(Kind::ProcLink);
-                        }
-                        let target = rustix::fs::readlinkat(&fd, "", Vec::new())
-                            .map_err(|error| failed("readlinkat", error))?;
-                        Ok(Seen::Link(target.into_bytes()))
-                    }
-                    FileType::Directory => Ok(Seen::Directory(fd)),
-                    _ => Ok(Seen::Other(fd)),
-                }
-            }
-
-            fn socket_directory(&mut self, _dir: &OwnedFd) -> Result<(), Kind> {
-                Ok(())
-            }
-        }
-
-        impl Walked<OwnedFd, OwnedFd> {
-            /// One non-blocking connect to the socket the walk holds, through `/proc/self/fd/<n>` of its descriptor,
-            /// which reaches that inode without resolving the address again. Refused before any connect when the walk
-            /// did not end holding the final component (the module documentation) and when `/proc` is not procfs.
-            pub(crate) fn connect(&self) -> Result<UnixStream, UseError> {
-                self.connect_in(b"/proc")
-            }
-
-            /// [`Self::connect`] with procfs expected at `proc`.
-            pub(crate) fn connect_in(&self, proc: &[u8]) -> Result<UnixStream, UseError> {
-                let path = self.through(proc, self.socket()?, None)?;
-                self.connect_by(path)
-            }
-
-            /// Binds the socket's name in the walked directory, through `/proc/self/fd/<n>/<name>` of its descriptor.
-            /// Refused when the walk ended before the socket's own name, and when `/proc` is not procfs. The socket's
-            /// mode is the caller's.
-            pub(crate) fn bind(&self) -> Result<UnixListener, UseError> {
-                self.bind_in(b"/proc")
-            }
-
-            /// [`Self::bind`] with procfs expected at `proc`.
-            pub(crate) fn bind_in(&self, proc: &[u8]) -> Result<UnixListener, UseError> {
-                self.unwalked()?;
-                let path = self.through(proc, &self.parent, Some(&self.name))?;
-                self.bind_by(path)
-            }
-
-            /// `<proc>/self/fd/<fd>[/<name>]`, once `<proc>/self/fd` is shown to be on procfs.
-            fn through(&self, proc: &[u8], fd: &OwnedFd, name: Option<&[u8]>) -> Result<Vec<u8>, WalkRefusal> {
-                let mut table = proc.to_vec();
-                table.extend_from_slice(b"/self/fd");
-                let opened = rustix::fs::open(
-                    OsStr::from_bytes(&table),
-                    OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-                    Mode::empty(),
-                );
-                let on_proc = opened
-                    .and_then(|fd| rustix::fs::fstatfs(&fd))
-                    .is_ok_and(|stat| stat.f_type as u32 == PROC_SUPER_MAGIC);
-                if !on_proc {
-                    return Err(WalkRefusal { component: self.address.clone(), kind: Kind::NoProc });
-                }
-                let mut path = table;
-                path.extend_from_slice(format!("/{}", fd.as_raw_fd()).as_bytes());
-                if let Some(name) = name {
-                    path.push(b'/');
-                    path.extend_from_slice(name);
-                }
-                Ok(path)
-            }
-        }
+        mod linux;
+        pub(crate) use linux::*;
     } else if #[cfg(target_vendor = "apple")] {
-        use std::{
-            ffi::{CStr, CString, c_char, c_int},
-            os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
-        };
-
+        mod macos;
         mod no_trigger;
+        pub(crate) use macos::*;
         pub(crate) use no_trigger::{NoTrigger, NoTriggerGate};
-
-        /// The grammar this host applies.
-        pub(crate) const HOST: Platform = Platform::Macos;
-
-        /// A walked directory, and the flags of the mount it is on.
-        #[derive(Debug)]
-        pub(crate) struct MacDir {
-            fd: OwnedFd,
-            flags: u32,
-        }
-
-        fn word(buffer: &[u8], at: usize) -> u32 {
-            u32::from_ne_bytes([buffer[at], buffer[at + 1], buffer[at + 2], buffer[at + 3]])
-        }
-
-        fn long(buffer: &[u8], at: usize) -> u64 {
-            let mut bytes = [0u8; 8];
-            bytes.copy_from_slice(&buffer[at..at + 8]);
-            u64::from_ne_bytes(bytes)
-        }
-
-        fn name_of(name: &[u8]) -> Result<CString, Kind> {
-            CString::new(name).map_err(|_| Kind::Unreadable { call: "getattrlistat", errno: None })
-        }
-
-        /// The attributes of `name` in `dir`, never following a link or crossing a trigger. The buffer is packed in
-        /// bit order, invalid attributes included (`FSOPT_PACK_INVAL_ATTRS`): its length, the returned set (20 bytes),
-        /// `ATTR_CMN_FSID` (8), `ATTR_CMN_OBJTYPE` (4), `ATTR_CMN_FILEID` (8) and `ATTR_DIR_MOUNTSTATUS` (4).
-        fn attributes(dir: RawFd, name: &CString) -> io::Result<MacAttributes> {
-            let mut list = libc::attrlist {
-                bitmapcount: libc::ATTR_BIT_MAP_COUNT,
-                reserved: 0,
-                commonattr: libc::ATTR_CMN_RETURNED_ATTRS | libc::ATTR_CMN_FSID | libc::ATTR_CMN_OBJTYPE
-                    | libc::ATTR_CMN_FILEID,
-                volattr: 0,
-                dirattr: libc::ATTR_DIR_MOUNTSTATUS,
-                fileattr: 0,
-                forkattr: 0,
-            };
-            let mut buffer = [0u8; 64];
-            let options = libc::FSOPT_NOFOLLOW | libc::FSOPT_PACK_INVAL_ATTRS;
-            // SAFETY: `list` and `buffer` are valid for the call; the kernel writes at most `buffer.len()` bytes.
-            let result = unsafe {
-                libc::getattrlistat(dir, name.as_ptr(), (&raw mut list).cast(), buffer.as_mut_ptr().cast(), buffer.len(),
-                    libc::c_ulong::from(options))
-            };
-            if result != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let common = libc::ATTR_CMN_FSID | libc::ATTR_CMN_OBJTYPE | libc::ATTR_CMN_FILEID;
-            if word(&buffer, 4) & common != common {
-                return Err(io::Error::from(io::ErrorKind::InvalidData));
-            }
-            let mut fsid = [0u8; 8];
-            fsid.copy_from_slice(&buffer[24..32]);
-            Ok(MacAttributes {
-                fsid,
-                objtype: word(&buffer, 32),
-                fileid: long(&buffer, 36),
-                mount_status: (word(&buffer, 12) & libc::ATTR_DIR_MOUNTSTATUS != 0).then(|| word(&buffer, 44)),
-            })
-        }
-
-        /// The file-system and file IDs of an open descriptor (`fgetattrlist`).
-        fn identity(fd: RawFd) -> io::Result<([u8; 8], u64)> {
-            let mut list = libc::attrlist {
-                bitmapcount: libc::ATTR_BIT_MAP_COUNT,
-                reserved: 0,
-                commonattr: libc::ATTR_CMN_RETURNED_ATTRS | libc::ATTR_CMN_FSID | libc::ATTR_CMN_FILEID,
-                volattr: 0,
-                dirattr: 0,
-                fileattr: 0,
-                forkattr: 0,
-            };
-            let mut buffer = [0u8; 64];
-            // SAFETY: as in `attributes`.
-            let result = unsafe {
-                libc::fgetattrlist(fd, (&raw mut list).cast(), buffer.as_mut_ptr().cast(), buffer.len(),
-                    libc::FSOPT_PACK_INVAL_ATTRS)
-            };
-            if result != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let mut fsid = [0u8; 8];
-            fsid.copy_from_slice(&buffer[24..32]);
-            Ok((fsid, long(&buffer, 32)))
-        }
-
-        /// The mount `fd` is on: its flags and its type name. Its `f_fsid` is not compared with the probe's file-system ID:
-        /// on the sealed system volume the two differ (`/System`: `f_fsid` is the data volume's), as `st_dev` does.
-        fn mount_of(fd: RawFd) -> io::Result<(u32, Vec<u8>)> {
-            // SAFETY: `statfs` is plain data, written by the call.
-            let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
-            // SAFETY: `stat` is valid for writes.
-            if unsafe { libc::fstatfs(fd, &mut stat) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let name: Vec<u8> = stat.f_fstypename.iter().take_while(|&&c| c != 0).map(|&c: &c_char| c as u8).collect();
-            Ok((stat.f_flags, name))
-        }
-
-        fn open_at(dir: RawFd, name: &CStr, flags: c_int) -> io::Result<OwnedFd> {
-            // SAFETY: `name` is NUL-terminated; the descriptor returned is owned by the caller.
-            let fd = unsafe { libc::openat(dir, name.as_ptr(), flags) };
-            if fd < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: `fd` was just opened and is owned by no one else.
-            Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-        }
-
-        impl Probe for HostProbe {
-            type Dir = MacDir;
-            type Leaf = ();
-
-            fn root(&mut self) -> Result<MacDir, Kind> {
-                let fd = open_at(libc::AT_FDCWD, c"/", libc::O_SEARCH | libc::O_CLOEXEC)
-                    .map_err(|error| unreadable("open", &error))?;
-                let (flags, _) = mount_of(fd.as_raw_fd()).map_err(|error| unreadable("fstatfs", &error))?;
-                Ok(MacDir { fd, flags })
-            }
-
-            fn look(&mut self, dir: &MacDir, name: &[u8]) -> Result<Seen<MacDir, ()>, Kind> {
-                let name = name_of(name)?;
-                let seen = match attributes(dir.fd.as_raw_fd(), &name) {
-                    Ok(seen) => seen,
-                    Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
-                        return Ok(Seen::Missing);
-                    }
-                    Err(error) => {
-                        return Err(unreadable("getattrlistat", &error));
-                    }
-                };
-                match judge_probe(&seen)? {
-                    MacNext::ReadLink => {
-                        let mut target = vec![0u8; libc::PATH_MAX as usize + 1];
-                        // SAFETY: `target` is valid for `target.len()` bytes.
-                        let length = unsafe {
-                            libc::readlinkat(dir.fd.as_raw_fd(), name.as_ptr(), target.as_mut_ptr().cast(), target.len())
-                        };
-                        let Ok(length) = usize::try_from(length) else {
-                            return Err(unreadable("readlinkat", &io::Error::last_os_error()));
-                        };
-                        if length >= target.len() {
-                            return Err(Kind::Unreadable { call: "readlinkat", errno: None });
-                        }
-                        target.truncate(length);
-                        Ok(Seen::Link(target))
-                    }
-                    MacNext::Other => Ok(Seen::Other(())),
-                    MacNext::Open => {
-                        let flags = libc::O_SEARCH | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-                        let fd = match open_at(dir.fd.as_raw_fd(), &name, flags) {
-                            Ok(fd) => fd,
-                            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
-                                return Ok(Seen::Missing);
-                            }
-                            Err(error) => {
-                                return Err(unreadable("openat", &error));
-                            }
-                        };
-                        let opened = identity(fd.as_raw_fd()).map_err(|error| unreadable("fgetattrlist", &error))?;
-                        let (flags, type_name) =
-                            mount_of(fd.as_raw_fd()).map_err(|error| unreadable("fstatfs", &error))?;
-                        judge_opened(&seen, opened, flags, &type_name)?;
-                        Ok(Seen::Directory(MacDir { fd, flags }))
-                    }
-                }
-            }
-
-            fn socket_directory(&mut self, dir: &MacDir) -> Result<(), Kind> {
-                if dir.flags & MNT_IGNORE_OWNERSHIP != 0 {
-                    return Err(Kind::IgnoresOwnership);
-                }
-                Ok(())
-            }
-        }
-
-        impl Walked<MacDir, ()> {
-            /// One non-blocking connect to the parsed address, which fits `sun_path` (there is no `connectat`), once
-            /// the walk has ended holding the address's final component. A process that is its own holds
-            /// [`NoTrigger`] from before the walk until `connect` returns.
-            pub(crate) fn connect(&self) -> Result<UnixStream, UseError> {
-                self.socket()?;
-                self.connect_by(self.address.clone())
-            }
-
-            /// Binds the parsed address, once the walk has judged the socket's own directory. The serving CLI holds
-            /// [`NoTrigger`] from before the walk until `bind` returns. The socket's mode is the caller's.
-            pub(crate) fn bind(&self) -> Result<UnixListener, UseError> {
-                self.unwalked()?;
-                self.bind_by(self.address.clone())
-            }
-        }
     } else {
         compile_error!("the socket-path walk has a probe for Linux and macOS only (parked server design §3)");
+    }
+}
+
+// The rows' reach into the walk: the host's walk without a gate or a hold, and the walk's own connect and bind, which
+// production code reaches only through a `Walk`.
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        /// The host's walk of `path` without a trigger hold: what the walk judged and holds.
+        pub(crate) fn walk_host(path: &[u8]) -> Result<HostWalked, WalkRefusal> {
+            walk_with(path, &mut HostProbe)
+        }
+
+        /// The walk's own connect and bind ([`Walked::connect`], [`Walked::bind`]), for the rows.
+        pub(crate) trait RowUse {
+            fn connect(&self) -> Result<UnixStream, UseError>;
+            fn bind(&self) -> Result<UnixListener, UseError>;
+        }
+
+        impl RowUse for HostWalked {
+            fn connect(&self) -> Result<UnixStream, UseError> {
+                HostWalked::connect(self)
+            }
+
+            fn bind(&self) -> Result<UnixListener, UseError> {
+                HostWalked::bind(self)
+            }
+        }
     }
 }

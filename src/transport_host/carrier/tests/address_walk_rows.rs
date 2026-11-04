@@ -12,7 +12,8 @@ cfg_if::cfg_if! {
                 address::{
                     DIR_MNTSTATUS_TRIGGER, HOST, Held, Kind, LINK_LIMIT, MNT_AUTOMOUNTED, MNT_IGNORE_OWNERSHIP, MNT_LOCAL,
                     MacAttributes, MacNext, Place, Platform, Probe, Seen, UseError, VDIR, VLNK, WalkRefusal,
-                    judge_opened, judge_probe, linux_refused_type, macos_refused_mount, walk, walk_with,
+                    HostWalked, RowUse, judge_opened, judge_probe, linux_refused_type, macos_refused_mount, walk_host,
+                    walk_with,
                 },
             };
             use std::{
@@ -44,6 +45,12 @@ cfg_if::cfg_if! {
                 (dir, path)
             }
 
+            /// The host's walk of `path`, without a trigger hold: what the walk judged and holds (the carrier takes a
+            /// `Walk`, made under the process's gate; `walk_entry_rows`).
+            fn walk(path: &[u8]) -> Result<HostWalked, WalkRefusal> {
+                walk_host(path)
+            }
+
             fn bytes(path: &Path) -> Vec<u8> {
                 path.as_os_str().as_bytes().to_vec()
             }
@@ -58,7 +65,7 @@ cfg_if::cfg_if! {
 
             /// Where the host's walk of `path` ends, or its refusal.
             fn place(path: &Path) -> Result<Place, WalkRefusal> {
-                walk(&bytes(path)).map(|walked| walked.place)
+                walk(&bytes(path)).map(|walked| walked.place().clone())
             }
 
             /// `count` links in a chain, `link-1` to `link-2` and so on, the last to the directory `real`.
@@ -127,12 +134,12 @@ cfg_if::cfg_if! {
                 let socket = dir.join("ws-0123456789abcdef");
                 let _listener = UnixListener::bind(&socket).unwrap();
                 let walked = walk(&bytes(&socket)).unwrap();
-                assert_eq!(walked.place, Place::Reached(bytes(&socket)));
-                assert!(walked.last && walked.name == b"ws-0123456789abcdef");
-                assert!(matches!(walked.held, Some(Held::Other(_))), "{walked:?}");
+                assert_eq!(*walked.place(), Place::Reached(bytes(&socket)));
+                assert!(walked.last() && walked.name() == b"ws-0123456789abcdef");
+                assert!(matches!(walked.held(), Some(Held::Other(_))), "{walked:?}");
                 let walked = walk(&bytes(&dir.join("gone/deeper/ws"))).unwrap();
-                assert_eq!(walked.place, Place::Ended(bytes(&dir.join("gone"))));
-                assert!(!walked.last && walked.name == b"gone" && walked.held.is_none());
+                assert_eq!(*walked.place(), Place::Ended(bytes(&dir.join("gone"))));
+                assert!(!walked.last() && walked.name() == b"gone" && walked.held().is_none());
             }
 
             #[test]
@@ -149,7 +156,7 @@ cfg_if::cfg_if! {
                     assert_eq!(kernel.raw_os_error(), Some(libc::ENOTDIR), "{below}");
                     let component = bytes(address.parent().unwrap());
                     assert_eq!(
-                        walk(&bytes(&address)).map(|walked| walked.place),
+                        walk(&bytes(&address)).map(|walked| walked.place().clone()),
                         Err(WalkRefusal { component, kind: Kind::NotDirectory }),
                         "{below}"
                     );
@@ -167,7 +174,7 @@ cfg_if::cfg_if! {
                         ("/w/L", Entry::Link(target)),
                     ]);
                     assert_eq!(
-                        walk_with(b"/w/L", &mut fake).map(|walked| walked.place),
+                        walk_with(b"/w/L", &mut fake).map(|walked| walked.place().clone()),
                         Err(WalkRefusal { component: b"/w/sock".to_vec(), kind: Kind::NotDirectory }),
                         "{target}"
                     );
@@ -178,7 +185,7 @@ cfg_if::cfg_if! {
                         ("/w/L", Entry::Link(target)),
                     ]);
                     assert_eq!(
-                        walk_with(b"/w/L/ws", &mut fake).map(|walked| walked.place),
+                        walk_with(b"/w/L/ws", &mut fake).map(|walked| walked.place().clone()),
                         Err(WalkRefusal { component: b"/w/sock".to_vec(), kind: Kind::NotDirectory }),
                         "{target}/ws"
                     );
@@ -197,21 +204,21 @@ cfg_if::cfg_if! {
                 let entries = || vec![("/w", Entry::Dir), ("/w/E", Entry::Link("")), ("/w/f", Entry::Socket)];
                 let mut fake = Fake::new(entries());
                 let walked = walk_with(b"/w/E/f", &mut fake).unwrap();
-                assert_eq!(walked.place, Place::Ended(b"/w/E".to_vec()));
-                assert!(!walked.last && walked.held.is_none(), "{walked:?}");
+                assert_eq!(*walked.place(), Place::Ended(b"/w/E".to_vec()));
+                assert!(!walked.last() && walked.held().is_none(), "{walked:?}");
                 assert_eq!(fake.looked, ["/w", "/w/E"]);
                 let mut fake = Fake::new(entries());
                 let walked = walk_with(b"/w/E", &mut fake).unwrap();
-                assert_eq!(walked.place, Place::Ended(b"/w/E".to_vec()));
-                assert!(walked.held.is_none(), "{walked:?}");
+                assert_eq!(*walked.place(), Place::Ended(b"/w/E".to_vec()));
+                assert!(walked.held().is_none(), "{walked:?}");
             }
 
             #[test]
             fn a_missing_component_before_the_last_holds_no_socket() {
                 let mut fake = Fake::new(vec![("/w", Entry::Dir)]);
                 let walked = walk_with(b"/w/gone/deeper/ws", &mut fake).unwrap();
-                assert_eq!(walked.place, Place::Ended(b"/w/gone".to_vec()));
-                assert!(!walked.last && walked.held.is_none(), "{walked:?}");
+                assert_eq!(*walked.place(), Place::Ended(b"/w/gone".to_vec()));
+                assert!(!walked.last() && walked.held().is_none(), "{walked:?}");
                 assert_eq!(fake.looked, ["/w", "/w/gone"]);
             }
 
@@ -326,7 +333,7 @@ cfg_if::cfg_if! {
             }
 
             fn fake_place(path: &[u8], fake: &mut Fake) -> Result<Place, WalkRefusal> {
-                walk_with(path, fake).map(|walked| walked.place)
+                walk_with(path, fake).map(|walked| walked.place().clone())
             }
 
             #[test]
@@ -485,7 +492,7 @@ cfg_if::cfg_if! {
 
             cfg_if::cfg_if! {
                 if #[cfg(target_vendor = "apple")] {
-                    use super::super::super::local::address::{NoTrigger, NoTriggerGate};
+                    use super::super::super::local::{address::NoTrigger, row_gate};
 
                     #[test]
                     fn the_mount_flags_are_the_systems() {
@@ -501,9 +508,9 @@ cfg_if::cfg_if! {
                             component: b"/System/Volumes/Data/home".to_vec(),
                             kind: Kind::FileSystem("autofs".to_owned()),
                         };
-                        assert_eq!(walk(b"/System/Volumes/Data/home/gwz/ws").map(|walked| walked.place), Err(refused.clone()));
+                        assert_eq!(walk(b"/System/Volumes/Data/home/gwz/ws").map(|walked| walked.place().clone()), Err(refused.clone()));
                         // `/home` is a link to it, read and walked again.
-                        assert_eq!(walk(b"/home/gwz/ws").map(|walked| walked.place), Err(refused));
+                        assert_eq!(walk(b"/home/gwz/ws").map(|walked| walked.place().clone()), Err(refused));
                     }
 
                     #[test]
@@ -538,7 +545,7 @@ cfg_if::cfg_if! {
                         assert_eq!(address.len(), SUN_PATH_MAX);
                         let listener = UnixListener::bind(&address).unwrap();
                         let walked = walk(address.as_bytes()).unwrap();
-                        let Place::Reached(resolved) = &walked.place else { panic!("{walked:?}") };
+                        let Place::Reached(resolved) = walked.place() else { panic!("{walked:?}") };
                         assert_eq!(resolved.len(), SUN_PATH_MAX + "/private".len());
                         // The connect goes by the address (103 bytes), not by the walked place (111).
                         let _client = walked.connect().unwrap();
@@ -565,7 +572,7 @@ cfg_if::cfg_if! {
 
                     #[test]
                     fn no_trigger_holds_the_device_or_the_process_policy() {
-                        let gate = NoTriggerGate::new();
+                        let gate = row_gate();
                         let held = gate.hold().unwrap();
                         assert!(held.holds_device(), "{held:?}");
                         drop(held);
@@ -592,11 +599,28 @@ cfg_if::cfg_if! {
                             }
                             assert_eq!(NoTrigger::policy_is_off(), before, "first dropped first: {first_dropped_first}");
                         }
+                        // Code F1 / State F2 (2.3e2 round 1; State S3-2): two gates of one process that overlap leave
+                        // the policy as found, in either drop order: the second finds it off and takes no restore duty.
+                        for first_gate_dropped_first in [true, false] {
+                            let (one, two) = (row_gate(), row_gate());
+                            let first = one.hold_with(c"/dev/gwz-address-row-no-such-device").unwrap();
+                            let second = two.hold_with(c"/dev/gwz-address-row-no-such-device").unwrap();
+                            assert!(NoTrigger::policy_is_off());
+                            if first_gate_dropped_first {
+                                drop(first);
+                                drop(second);
+                            } else {
+                                drop(second);
+                                drop(first);
+                            }
+                            assert_eq!(NoTrigger::policy_is_off(), before, "first gate dropped first: {first_gate_dropped_first}");
+                        }
                     }
                 } else if #[cfg(any(target_os = "linux", target_os = "android"))] {
                     mod linux_paths {
                         //! The connect and bind paths through what the walk holds: a component swapped after the walk
                         //! does not move them (design §3 "The walk and the connect", Linux).
+                        use super::super::super::super::local::address::{RowProc, RowUse};
                         use super::{Kind, Place, UseError, base, bytes, refusal, walk};
                         use std::os::unix::{
                             fs::{FileTypeExt, symlink},
@@ -625,7 +649,7 @@ cfg_if::cfg_if! {
                             std::fs::create_dir(dir.join("a")).unwrap();
                             std::fs::create_dir(dir.join("b")).unwrap();
                             let walked = walk(&bytes(&dir.join("a/ws"))).unwrap();
-                            assert_eq!(walked.place, Place::Ended(bytes(&dir.join("a/ws"))));
+                            assert_eq!(*walked.place(), Place::Ended(bytes(&dir.join("a/ws"))));
                             std::fs::rename(dir.join("a"), dir.join("a-walked")).unwrap();
                             symlink(dir.join("b"), dir.join("a")).unwrap();
                             let _listener = walked.bind().unwrap();
@@ -813,16 +837,23 @@ cfg_if::cfg_if! {
         }
     } else if #[cfg(windows)] {
         mod windows {
-            use super::super::super::local::address::{WindowsFault, check_pipe};
+            use super::super::super::local::address::{ServerAddress, WindowsFault, check_pipe, checks};
 
             #[test]
             fn a_pipe_name_passes_both_checks_on_this_host() {
-                assert_eq!(check_pipe(r"\\.\pipe\gwz-address-row"), Ok(()));
+                let name = r"\\.\pipe\gwz-address-row";
+                assert_eq!(checks(name), Ok(()));
+                // Plan 2.3e2: the pipe form of a parsed address gives the name the connect and create take.
+                let checked = check_pipe(&ServerAddress::Pipe(name.to_owned())).expect("a pipe").expect("checked");
+                assert_eq!(checked.name(), name);
             }
 
             #[test]
             fn a_name_get_full_path_name_changes_is_refused() {
-                assert!(matches!(check_pipe(r"\\.\pipe\a\..\b"), Err(WindowsFault::Renamed { .. })));
+                assert!(matches!(checks(r"\\.\pipe\a\..\b"), Err(WindowsFault::Renamed { .. })));
+                // A pipe variant built by hand, which the grammar refuses, names no pipe: nothing is checked or opened.
+                assert!(check_pipe(&ServerAddress::Pipe(r"\\.\pipe\a\..\b".to_owned())).is_none());
+                assert!(check_pipe(&ServerAddress::Stdio).is_none());
             }
         }
     }

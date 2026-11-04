@@ -123,9 +123,24 @@ class PeerRuleTests(unittest.TestCase):
         for rel in clean:
             for source in ['#[cfg(test)]\nfn weaker() {}\n', '#[cfg(feature = "lax")]\nfn weaker() {}\n',
                            '#[cfg(target_os = "macos")]\nfn weaker() {}\n', 'fn weaker() -> bool { cfg!(unix) }\n']:
+                if rel == 'local/address/walk_unix.rs' and source.startswith('#[cfg(test)]'):
+                    continue
                 with self.subTest(rel=rel, source=source):
                     root = tree(**{**clean, rel: clean[rel] + source})
                     self.assertTrue(any('switch' in line for line in checker.violations(root)), source)
+        # Plan 2.3e2: the walk's test-only arm (the rows' reach into its private connect, bind and host walk) is
+        # walk_unix.rs's and walk_unix/linux.rs's alone; a run-time `cfg!(test)` stays refused there.
+        arm = 'cfg_if::cfg_if! { if #[cfg(test)] { pub(crate) fn walk_host() {} } }\n'
+        for rel in ['local/address/walk_unix.rs', 'local/address/walk_unix/linux.rs']:
+            with self.subTest(rel=rel, source='test arm'):
+                self.assertEqual(checker.violations(tree(**{**clean, rel: clean.get(rel, '') + arm})), [])
+            with self.subTest(rel=rel, source='cfg!(test)'):
+                root = tree(**{**clean, rel: clean.get(rel, '') + 'fn weaker() -> bool { cfg!(test) }\n'})
+                self.assertTrue(any('switch' in line for line in checker.violations(root)))
+        for rel in ['local/address/mod.rs', 'local/address/grammar.rs', 'local/address/walk_unix/macos.rs']:
+            with self.subTest(rel=rel, source='test arm elsewhere'):
+                root = tree(**{**clean, rel: clean.get(rel, '') + arm})
+                self.assertTrue(any('switch' in line for line in checker.violations(root)))
         # The macOS arm's switch is walk_unix.rs's alone.
         for rel in ['local/address/mod.rs', 'local/address/grammar.rs']:
             with self.subTest(rel=rel, source='apple'):

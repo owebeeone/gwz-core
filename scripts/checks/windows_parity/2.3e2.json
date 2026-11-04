@@ -1,0 +1,357 @@
+{
+ "done": false,
+ "entries": [
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "mod linux",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "gate",
+   "gate": "else if target_vendor = \"apple\"",
+   "target": "mod macos",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::dev_t",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::geteuid",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::ino_t",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "os::fd::{AsFd, BorrowedFd, OwnedFd}",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/local/mod.rs",
+   "kind": "os",
+   "gate": "os::unix::ffi::OsStrExt",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/local/server_files/mod.rs",
+   "kind": "os",
+   "gate": "os::unix::ffi::OsStrExt",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/mod.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "mod walk_entry_rows",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: stmt let files = super::support::socket_tempdir",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/server_files_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: stmt self.bind(&super::super",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/support.rs",
+   "kind": "gate",
+   "gate": "target_vendor = \"apple\"",
+   "target": "arm: stmt builder.tempdir_in(\"/private/tmp\").expect",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/support.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: fn bind_path",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: fn a_link_the_kernel_will_not_follow_is_refused",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: macro assert!",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: stmt let kernel = std::os::unix",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: stmt let listener = bound.expect(\"bound in the walked direct",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: stmt std::fs::write(&address",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "gate",
+   "gate": "target_vendor = \"apple\"",
+   "target": "arm: stmt PathBuf::from(\"/private/tmp\")",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2; round 2 of 2.3e2: the arm is now the rows' root-owned directory (/private/tmp on macOS, /tmp elsewhere) for the client and missing-directory rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "os",
+   "gate": "libc::geteuid",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "os",
+   "gate": "libc::lchown",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::net::UnixListener::bind",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::{ffi::OsStrExt, fs::{FileTypeExt, PermissionsExt, symlink}, net::UnixListener}",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::net::UnixListener::from",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "os",
+   "gate": "os::fd::AsRawFd",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/walk_entry_rows.rs",
+   "kind": "os",
+   "gate": "os::fd::BorrowedFd::borrow_raw",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::dev_t",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2 round 2 (the listener's bound socket identity, for the server's bind check)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::ino_t",
+   "target": "",
+   "owner": [
+    "2.3e2"
+   ],
+   "state": "platform",
+   "reason": "step 2.3e2: the carrier's connect and bind take the walk (Linux and macOS) or the checked pipe name (Windows); this Unix-only occurrence belongs to the walk's side, whose Windows counterpart is walk_windows.rs's CheckedPipe and windows.rs's typed pipe connect and create",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e2 (Windows: the pipe connect and create take the validated pipe form of ServerAddress, so both arms have one typed entry)",
+   "appendix": "new: step 2.3e2 round 2 (the listener's bound socket identity, for the server's bind check)"
+  }
+ ]
+}

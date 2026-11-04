@@ -60,12 +60,13 @@
    "path": "src/transport_host/carrier/local/server_files/mod.rs",
    "kind": "gate",
    "gate": "unix",
-   "target": "arm: fn files_path",
+   "target": "arm: use super::address::{Kind, NoTriggerGate, WalkRefusal, walk}",
    "owner": [
-    "2.3f"
+    "2.3f",
+    "2.3e2"
    ],
    "state": "paired",
-   "appendix": "new: step 2.3f, the Unix bind order (record, then the socket at ws-<key>) and the stale-socket call; the sibling `windows` arm creates the pipe and then records it"
+   "appendix": "new: step 2.3f, the Unix bind order (record, then the socket at ws-<key>) and the stale-socket call; the sibling `windows` arm creates the pipe and then records it; moved by step 2.3e2 (movement-only split, or the arm's first item changed)"
   },
   {
    "path": "src/transport_host/carrier/local/server_files/record.rs",

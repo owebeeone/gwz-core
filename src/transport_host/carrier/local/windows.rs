@@ -11,7 +11,9 @@ use super::super::{
 };
 use super::{
     Accepted, Integrity, LocalRefusal, PeerIdentity, PeerPolicy, PeerRefusal, Principal, Relation,
-    StreamCarrier, sandbox::SandboxFindings,
+    StreamCarrier,
+    address::{CheckedPipe, check_name},
+    sandbox::SandboxFindings,
 };
 use gwz_session_channel::write_frame;
 use std::{
@@ -283,9 +285,14 @@ pub(crate) fn pipe_sddl(sid: &str) -> String {
 /// A pipe instance, closed on drop.
 pub(crate) struct PipeInstance(Owned);
 
+/// Creates an instance of the pipe `pipe` names: the server's create takes only a name the pipe checks passed.
+fn create_instance(pipe: &CheckedPipe, first: bool) -> Result<PipeInstance, LocalRefusal> {
+    create_named(pipe.name(), first)
+}
+
 /// Creates an instance of the pipe `name` with this user's descriptor. `first` asks for the first instance of the
 /// name, which fails if the name is already in use by anything.
-fn create_instance(name: &str, first: bool) -> Result<PipeInstance, LocalRefusal> {
+fn create_named(name: &str, first: bool) -> Result<PipeInstance, LocalRefusal> {
     let Principal::Sid(sid) = own_identity()?.principal else {
         return Err(LocalRefusal::Peer(PeerRefusal::Unreadable("a user SID")));
     };
@@ -360,7 +367,7 @@ fn create_instance_with(
 
 /// The first instance of a pipe name (a squatter that holds the name makes this fail with `NameTaken`).
 pub(crate) fn create_first_instance(name: &str) -> Result<PipeInstance, LocalRefusal> {
-    create_instance(name, true)
+    create_named(name, true)
 }
 
 cfg_if::cfg_if! {
@@ -398,7 +405,7 @@ cfg_if::cfg_if! {
             for turn in 0..count {
                 await_client(&instance)?;
                 let next = if turn + 1 < count {
-                    Some(create_instance(name, false)?)
+                    Some(create_named(name, false)?)
                 } else {
                     None
                 };
@@ -494,9 +501,13 @@ impl RuntimeDir {
 pub(crate) struct LocalAddress(String);
 
 impl LocalAddress {
-    /// An address given explicitly. It is verified when it is connected to, never trusted before.
-    pub(crate) fn from_name(name: &str) -> Self {
-        Self(name.to_owned())
+    cfg_if::cfg_if! {
+        if #[cfg(test)] {
+            /// An address the rows name: they reach it through the pipe checks (`local::walk_to`).
+            pub(crate) fn from_name(name: &str) -> Self {
+                Self(name.to_owned())
+            }
+        }
     }
 
     pub(crate) fn pipe_name(&self) -> &str {
@@ -820,6 +831,7 @@ fn await_client(instance: &PipeInstance) -> Result<(), LocalRefusal> {
 
 /// A listening pipe: the instance waiting for the next client, and the rule applied to whoever connects.
 pub(crate) struct LocalListener {
+    pipe: CheckedPipe,
     address: LocalAddress,
     waiting: Mutex<Option<PipeInstance>>,
     policy: PeerPolicy,
@@ -845,9 +857,11 @@ impl LocalListener {
                     .map(|b| format!("{b:02x}"))
                     .collect::<String>()
             );
-            match create_instance(&name, true) {
+            let pipe = check_name(&name)?;
+            match create_instance(&pipe, true) {
                 Ok(first) => {
                     return Ok(Self {
+                        pipe,
                         address: LocalAddress(name),
                         waiting: Mutex::new(Some(first)),
                         policy,
@@ -871,12 +885,12 @@ impl LocalListener {
         let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
         let instance = match waiting.take() {
             Some(instance) => instance,
-            None => create_instance(self.address.pipe_name(), false)?,
+            None => create_instance(&self.pipe, false)?,
         };
         let handle = (instance.0).0;
         await_client(&instance)?;
         // The next client may connect to a fresh instance while this one is judged.
-        *waiting = Some(create_instance(self.address.pipe_name(), false)?);
+        *waiting = Some(create_instance(&self.pipe, false)?);
         drop(waiting);
         let PipeInstance(owned) = instance;
         let mut pid = 0u32;
@@ -902,11 +916,11 @@ use super::RawConnection;
 /// before `deadline`, and verifies the server before a byte is sent: the process that holds the pipe, its user, its
 /// integrity level and that it is not an AppContainer.
 fn connect_checked(
-    address: &LocalAddress,
+    pipe: &CheckedPipe,
     policy: &PeerPolicy,
     deadline: Instant,
 ) -> Result<(Owned, PeerIdentity), LocalRefusal> {
-    let name = wide(address.pipe_name());
+    let name = wide(pipe.name());
     let handle = loop {
         // SAFETY: `name` is NUL-terminated. The pipe is opened overlapped, and with identification impersonation only:
         // a server can learn who the client is but never act as it.
@@ -961,15 +975,15 @@ fn connect_checked(
     Ok((handle, peer))
 }
 
-/// Connects to the pipe `address`, verifying the server before a byte is sent. The result is the halves of the
+/// Connects to the pipe `pipe` names, a name the pipe checks passed, verifying the server before a byte is sent. The result is the halves of the
 /// connection, not yet a carrier, for the client's handshake (`handshake::dial`): the carrier is built over them only
 /// once the handshake is done ([`RawConnection::into_carrier`]). A busy pipe is waited for until `deadline`, which the
 /// handshake's client counts from the start of its connect.
 pub(crate) fn connect_stream(
-    address: &LocalAddress,
+    pipe: CheckedPipe,
     policy: &PeerPolicy,
     deadline: Instant,
 ) -> Result<RawConnection, LocalRefusal> {
-    let (handle, peer) = connect_checked(address, policy, deadline)?;
+    let (handle, peer) = connect_checked(&pipe, policy, deadline)?;
     raw_over(handle, false, Side::Client, peer)
 }

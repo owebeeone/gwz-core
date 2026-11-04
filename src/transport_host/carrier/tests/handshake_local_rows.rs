@@ -12,7 +12,9 @@ use super::super::{
         DialFault, HostOutcome, Intent, SERVER_LISTENER_REFUSED, SERVER_UNAVAILABLE,
         SERVER_VERSION_MISMATCH, Stage, WireEnd, accept_open, dial,
     },
-    local::{LocalAddress, LocalListener, LocalRefusal, PeerPolicy, PeerRefusal},
+    local::{
+        LocalAddress, LocalListener, LocalRefusal, PeerPolicy, PeerRefusal, row_gate, walk_to,
+    },
     wire::{INVALID_REQUEST, SERVER_PEER_REFUSED},
 };
 use super::handshake_support::*;
@@ -47,7 +49,12 @@ fn dial_fault(
 ) -> (DialFault, Duration) {
     let started = Instant::now();
     let policy = PeerPolicy::current_user().unwrap();
-    match dial(address, &policy, CarrierLimits::DEFAULT, config, intent) {
+    let gate = row_gate();
+    let target = match walk_to(address, &gate) {
+        Ok(target) => target,
+        Err(refusal) => return (DialFault::Connect(refusal), started.elapsed()),
+    };
+    match dial(target, &policy, CarrierLimits::DEFAULT, config, intent) {
         Err(fault) => (fault, started.elapsed()),
         Ok(_) => panic!("the dial succeeded"),
     }
@@ -86,7 +93,7 @@ fn a_client_opens_a_session_over_a_real_local_carrier_and_loses_no_byte() {
             (outcome, call)
         });
         let (carrier, outcome) = dial(
-            listener.address(),
+            walk_to(listener.address(), &row_gate()).expect("the walk"),
             &policy,
             CarrierLimits::DEFAULT,
             &config(Bounds::DEFAULT),
@@ -128,7 +135,7 @@ fn a_control_exchange_over_a_real_local_carrier_returns_the_state() {
             .unwrap()
         });
         let outcome = dial(
-            listener.address(),
+            walk_to(listener.address(), &row_gate()).expect("the walk"),
             &policy,
             CarrierLimits::DEFAULT,
             &config(Bounds::DEFAULT),
@@ -380,7 +387,7 @@ cfg_if::cfg_if! {
                             (Intent::Control(control), Bounds { state_wait: BOUND, ..Bounds::DEFAULT }),
                         ] {
                             let started = Instant::now();
-                            let fault = match dial(&address, &policy, CarrierLimits::DEFAULT, &config(bounds), &intent) {
+                            let fault = match dial(walk_to(&address, &row_gate()).expect("the walk"), &policy, CarrierLimits::DEFAULT, &config(bounds), &intent) {
                                 Err(fault) => fault,
                                 Ok(_) => panic!("the dial succeeded"),
                             };
@@ -471,10 +478,10 @@ cfg_if::cfg_if! {
                 let policy = PeerPolicy::current_user().unwrap();
                 // The listener's one instance is taken by the first client; until the listener accepts it and makes
                 // another, the pipe is busy (ERROR_PIPE_BUSY) for the second.
-                let first = connect_stream(listener.address(), &policy, Instant::now() + Duration::from_secs(5))
+                let first = connect_stream(walk_to(listener.address(), &row_gate()).unwrap(), &policy, Instant::now() + Duration::from_secs(5))
                     .expect("the first client");
                 let started = Instant::now();
-                let timed_out = connect_stream(listener.address(), &policy, started + BOUND);
+                let timed_out = connect_stream(walk_to(listener.address(), &row_gate()).unwrap(), &policy, started + BOUND);
                 assert!(matches!(timed_out, Err(LocalRefusal::Timeout)), "{:?}", timed_out.err());
                 assert!(started.elapsed() >= BOUND, "gave up early: {:?}", started.elapsed());
                 let started = Instant::now();
@@ -486,7 +493,7 @@ cfg_if::cfg_if! {
                         thread::sleep(Duration::from_secs(2));
                         drop(accepted);
                     });
-                    connect_stream(listener.address(), &policy, started + Duration::from_secs(5))
+                    connect_stream(walk_to(listener.address(), &row_gate()).unwrap(), &policy, started + Duration::from_secs(5))
                 });
                 assert!(second.is_ok(), "{:?}", second.err());
                 assert!(started.elapsed() >= Duration::from_millis(100));
@@ -654,7 +661,7 @@ fn a_dial_that_refuses_the_listener_is_server_listener_refused_and_sends_nothing
     let started = Instant::now();
     // This client expects another user's listener: its own check of the listener disagrees.
     let fault = match dial(
-        listener.address(),
+        walk_to(listener.address(), &row_gate()).expect("the walk"),
         &other_user_policy(),
         CarrierLimits::DEFAULT,
         &config(Bounds::DEFAULT),

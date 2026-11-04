@@ -447,6 +447,8 @@ impl ServerListener {
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
+        use super::address::{Kind, NoTriggerGate, WalkRefusal, walk};
+
         fn files_path(runtime: &RuntimeDir) -> Result<&Path, FilesRefusal> {
             Ok(runtime.path())
         }
@@ -480,34 +482,58 @@ cfg_if::cfg_if! {
         }
 
         impl Claim {
-            /// Writes this server's records, then binds the socket at `ws-<key>` ([`record_then_bind`]).
+            /// Writes this server's records, then walks `ws-<key>` under `gate`, the process's, and binds the socket
+            /// through the walk ([`record_then_bind`]; plan 2.3e2: the server binds only through the walk, holding
+            /// `NoTrigger` from before the walk until the bind returns).
             ///
             /// # Errors
             ///
-            /// The record's or the bind's refusal.
-            pub(crate) fn bind(self, policy: PeerPolicy, limits: CarrierLimits) -> Result<ServerListener, FilesRefusal> {
+            /// The record's, the walk's or the bind's refusal.
+            pub(crate) fn bind(
+                self,
+                gate: &NoTriggerGate,
+                policy: PeerPolicy,
+                limits: CarrierLimits,
+            ) -> Result<ServerListener, FilesRefusal> {
                 let name = self.keys.server.socket_name();
                 let address = super::unix::socket_path(self.dir.path(), &name).map_err(FilesRefusal::Bind)?;
                 let (listener, socket) = record_then_bind(
-                    || self.record(address),
-                    |recorded| self.bind_recorded(&recorded, &name, policy, limits),
+                    || self.record(address.clone()),
+                    |recorded| self.bind_recorded(&recorded, &address, &name, gate, policy, limits),
                     || self.unrecord(),
                 )?;
                 self.into_server(listener, Some(socket))
             }
 
-            /// Binds the socket `name`; `_recorded` is the proof that the records naming it are written.
+            /// Walks `address`, the socket `name` in the directory, and binds it through the walk; `_recorded` is the
+            /// proof that the records naming it are written. The walked directory must be the claimed one (both
+            /// descriptors name one directory), and the entry at `name` there after the bind must be the listener's own
+            /// socket; anything else is refused before or after the bind (2.3e2 round 1, State F3 / Code F3).
             fn bind_recorded(
                 &self,
                 _recorded: &Recorded,
+                address: &Path,
                 name: &str,
+                gate: &NoTriggerGate,
                 policy: PeerPolicy,
                 limits: CarrierLimits,
             ) -> Result<(LocalListener, FileId), FilesRefusal> {
-                let listener = LocalListener::bind_at(self.dir.path(), name, policy, limits).map_err(FilesRefusal::Bind)?;
+                use std::os::unix::ffi::OsStrExt;
+                let walk = walk(address.as_os_str().as_bytes(), gate).map_err(|refusal| {
+                    FilesRefusal::Bind(LocalRefusal::Address { unavailable: false, text: refusal.to_string() })
+                })?;
+                let claimed = self.dir.entry(".").map_err(|error| FilesRefusal::Os(LocalRefusal::os("fstatat", &error)))?;
+                let walked = rustix::fs::fstat(walk.directory())
+                    .map_err(|error| FilesRefusal::Os(LocalRefusal::os("fstat", &error.into())))?;
+                if claimed.is_none_or(|(_, stat)| (stat.st_dev, stat.st_ino) != (walked.st_dev, walked.st_ino)) {
+                    // The claimed directory's path reaches another directory now (renamed or replaced since the claim).
+                    let changed = WalkRefusal { component: self.dir.path().as_os_str().as_bytes().to_vec(), kind: Kind::Changed };
+                    return Err(FilesRefusal::Bind(LocalRefusal::Address { unavailable: false, text: changed.to_string() }));
+                }
+                let listener = LocalListener::bind(walk, policy, limits).map_err(FilesRefusal::Bind)?;
                 match self.dir.entry(name) {
-                    Ok(Some((id, _))) => Ok((listener, id)),
-                    Ok(None) => Err(FilesRefusal::Bind(LocalRefusal::NotOurSocket)),
+                    Ok(Some((id, stat))) if (stat.st_dev, stat.st_ino) == listener.bound_id() => Ok((listener, id)),
+                    Ok(_) => Err(FilesRefusal::Bind(LocalRefusal::NotOurSocket)),
                     Err(error) => Err(FilesRefusal::Os(LocalRefusal::os("fstatat", &error))),
                 }
             }

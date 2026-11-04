@@ -84,6 +84,31 @@ class Minting(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn('SpawnGate::ungated', errors[0])
 
+    def test_one_production_no_trigger_gate_site_passes(self):
+        # Plan 2.3e2 (2.3e2 round 1, Code F1 / State F2): the process owner makes the one NoTriggerGate.
+        self.assertEqual(errors_for(src__transport_host__other_rs='fn owner() { let gate = NoTriggerGate::new(); }\n'), [])
+
+    def test_a_second_production_no_trigger_gate_site_is_red(self):
+        errors = errors_for(
+            src__transport_host__other_rs='fn owner() { let gate = NoTriggerGate::new(); }\n',
+            src__transport_host__composition_rs='fn gate() -> SpawnGate { SpawnGate::process() }\n'
+                                                'fn walk() { let again = NoTriggerGate::new(); }\n',
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn('NoTriggerGate::new', errors[0])
+        self.assertIn('src/transport_host/composition.rs:2', errors[0])
+        self.assertIn('src/transport_host/other.rs:1', errors[0])
+
+    def test_two_no_trigger_gates_in_one_production_file_are_red(self):
+        errors = errors_for(src__transport_host__other_rs='fn a() { NoTriggerGate::new(); }\nfn b() { NoTriggerGate::new(); }\n')
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn('src/transport_host/other.rs:1,2', errors[0])
+
+    def test_test_only_no_trigger_gates_are_exempt(self):
+        source = ('fn owner() { NoTriggerGate::new(); }\n'
+                  'cfg_if::cfg_if! { if #[cfg(test)] { fn row() { NoTriggerGate::new(); NoTriggerGate::new(); } } }\n')
+        self.assertEqual(errors_for(src__transport_host__other_rs=source), [])
+
     def test_gwz_core_itself_passes(self):
         self.assertEqual(checker.check(checker.ROOT), [])
 

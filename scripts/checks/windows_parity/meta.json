@@ -65,7 +65,8 @@
     "2.3d",
     "R3b-win",
     "2.3e",
-    "2.3f"
+    "2.3f",
+    "2.3e2"
   ],
   "done_steps": [
     "0.1",
@@ -76,6 +77,7 @@
     "0.5b"
   ],
   "step_notes": {
+    "2.3e2": "Sub-step 2.3e2 of plan step 2.3 (dev-docs/GwzServerCore-Step2.3-Plan.md section 3): the carrier's connect and bind take the walk (Linux and macOS, under the process's one NoTriggerGate) and the pipe connect and create take the checked pipe name (Windows), so both arms have one typed entry. Added by the lane owner (operator 2026-11-03), not named by the parity plan.",
     "2.3e": "Sub-step 2.3e of plan step 2.3 (dev-docs/GwzServerCore-Step2.3-Plan.md section 3): the server address grammar and the Linux and macOS walk of a socket path, with their real-link and real-mount rows; Windows checks its pipe name with GetFullPathNameW and QueryDosDeviceW instead. Added by the lane, not named by the parity plan.",
     "R3b-win": "Step R3b-win of the Phase 1 remediation plan (dev-docs/GwzPhase1-RemPlan.md, row R3): the caller identity an operation's AuthScope folds, read from the process token on Windows and as the effective uid on Unix. Added by the lane, not named by the parity plan.",
     "2.3f": "Sub-step 2.3f of plan step 2.3 (dev-docs/GwzServerCore-Step2.3-Plan.md section 3): the server's listener files (ws-<key> names, the lock and its record, the file rule, the stale socket, the link check) on Linux and macOS, with the Windows file rule, LockFileEx lock and pipe record beside them. Added by the lane, not named by the parity plan.",

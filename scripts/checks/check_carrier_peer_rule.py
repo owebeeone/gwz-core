@@ -24,7 +24,8 @@ test-only or configurable override:
   (the environment rule above covers them), may switch on the platform only as sandbox.rs lists, and are called: unix.rs
   must call `sandbox::of_peer(` and peer.rs `sandbox::of_self(`, so that a refactor cannot drop a probe;
 - the server address (plan 2.3e, local/address/): its platform choice (the Unix walk or the Windows checks, the Linux or
-  macOS probe) is listed like the probes', and nothing else is;
+  macOS probe) is listed like the probes', and nothing else is, but for the walk's test-only arm (plan 2.3e2: the rows'
+  reach into the walk's private connect, bind and gate-free host walk, which production code cannot name);
 - the hold's order (unix.rs `check_peer`): the probe is followed by the consuming confirmation, `hold.confirm(`, which
   unix.rs must call, and `check_peer` calls no `.check(` (the non-consuming test of a hold, which a probe could follow
   and which would let the confirmation be dropped without a compile error);
@@ -57,6 +58,10 @@ ALLOWED_CFG = {
     'local/peer.rs': ['test'],
     'local/windows.rs': ['test'],
     'local/mod.rs': ['unix', 'windows', 'all(test, unix)', 'all(test, windows)'],
+    # Plan 2.3e2 (round 1 Code F2 / State F4): the walk's raw connect and bind and its gate-free host walk are private
+    # to the walk; the rows reach them through a test-only arm (`walk_host`, `RowUse`, `RowProc`), never production code.
+    'local/address/walk_unix.rs': ['test'],
+    'local/address/walk_unix/linux.rs': ['test'],
 }
 # `cfg!(..)` in expression position: no switch at all in any carrier file (a run-time branch on a build variant).
 ALLOWED_CFG_EXPRESSION: dict[str, list[str]] = {}

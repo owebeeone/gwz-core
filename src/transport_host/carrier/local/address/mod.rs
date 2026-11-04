@@ -1,6 +1,6 @@
 //! A server address (plan step 2.3e; parked server design §3 "Addresses" and "The walk"; `GwzSplitCommandChannel.md`
-//! §4.1): one type, [`ServerAddress`], that every connector, binder and launcher takes, so that no code path opens an
-//! unparsed string.
+//! §4.1): one type, [`ServerAddress`], that every connector, binder and launcher starts from, so that no code path opens
+//! an unparsed string.
 //!
 //! **Parsing** ([`grammar`]) happens before any file-system, pipe or network call takes the address. A refusal is
 //! [`AddressRefused`], code `server_address_refused` (83), naming the source and the reason and showing the address with
@@ -8,11 +8,13 @@
 //!
 //! **The walk** (Linux and macOS, `walk_unix`) follows a parsed socket path from `/` one component at a time, reading
 //! links rather than following them (8 in all, a ninth refuses), and refuses an automount trigger, an automounter's
-//! mount or a network file system before it looks up the next component. It holds what it judged, and a connect or bind
-//! goes only through it (`Walked::connect`, `Walked::bind`, which borrow what the walk holds, so no path outlives it);
-//! macOS has `NoTrigger`, from a `NoTriggerGate`, for a process that is its own. **Windows** has no walk: its checks after the grammar are `GetFullPathNameW` (the name comes back unchanged) and
-//! `QueryDosDeviceW(L"PIPE")` (the pipe device is `\Device\NamedPipe`), `walk_windows`. Neither is called from the
-//! connect or bind path yet: plan step 2.3i plugs them in at the call site.
+//! mount or a network file system before it looks up the next component. It holds what it judged, and the carrier's
+//! connect and bind take only its result, a `Walk` that only `walk` builds under the process's `NoTriggerGate`
+//! (`local::unix::connect_stream`, `LocalListener::bind`, `handshake::dial`; plan 2.3e2), so no path outlives what the
+//! walk judged and nothing connects to or binds a path the walk did not produce. **Windows** has no walk: its checks
+//! after the grammar are `GetFullPathNameW` (the name comes back unchanged) and `QueryDosDeviceW(L"PIPE")` (the pipe
+//! device is `\Device\NamedPipe`), `walk_windows`, and the pipe's connect and create take only their result, a
+//! `CheckedPipe`.
 use super::super::handshake::escape;
 use std::{ffi::OsStr, fmt};
 
@@ -29,7 +31,7 @@ cfg_if::cfg_if! {
         pub(crate) use walk_unix::*;
     } else if #[cfg(windows)] {
         mod walk_windows;
-        pub(crate) use walk_windows::{HOST, check_pipe};
+        pub(crate) use walk_windows::{CheckedPipe, HOST, check_name, check_pipe, checks};
     }
 }
 

@@ -73,9 +73,15 @@ cfg_if::cfg_if! {
         mod unix;
         pub(crate) use unix::{LocalAddress, LocalListener, RuntimeDir, connect_stream, own_identity};
         pub(crate) use unix::{DirFlavor, resolve_directory};
+
+        /// What a client connects to (plan 2.3e2): a walk of the address, made under the process's trigger hold.
+        pub(crate) type Target<'g> = address::Walk<'g>;
     } else if #[cfg(windows)] {
         mod windows;
         pub(crate) use windows::{LocalAddress, LocalListener, RuntimeDir, connect_stream, own_identity};
+
+        /// What a client connects to (plan 2.3e2): a pipe name the pipe checks passed.
+        pub(crate) type Target<'g> = address::CheckedPipe;
     }
 }
 // What the rows reach into: the path rule and the pipe's construction, which production code uses through the items above.
@@ -86,6 +92,31 @@ cfg_if::cfg_if! {
         /// How long [`connect`] may take: the handshake's 30 seconds (server design §3).
         const CONNECT_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
+        /// What a row's walk is lent: a gate of the row's own (a test process has no process owner; the rows that set
+        /// the process's trigger policy are one row, `address_walk_rows`).
+        pub(crate) type RowGate = address::NoTriggerGate;
+
+        pub(crate) fn row_gate() -> RowGate {
+            address::NoTriggerGate::new()
+        }
+
+        impl LocalAddress {
+            /// An address the rows name: they reach it through the walk ([`walk_to`]); the carrier's connect and bind take
+            /// only a walk.
+            pub(crate) fn from_path(path: &std::path::Path) -> Self {
+                Self(path.to_path_buf())
+            }
+        }
+
+        /// The rows' walk of `address` under `gate`. A walk refusal is the carrier's [`LocalRefusal::Address`].
+        pub(crate) fn walk_to<'g>(address: &LocalAddress, gate: &'g RowGate) -> Result<Target<'g>, LocalRefusal> {
+            use std::os::unix::ffi::OsStrExt;
+            address::walk(address.path().as_os_str().as_bytes(), gate).map_err(|refusal| LocalRefusal::Address {
+                unavailable: false,
+                text: refusal.to_string(),
+            })
+        }
+
         /// Connects and builds the carrier at once, with no handshake: [`connect_stream`] and
         /// [`RawConnection::into_carrier`] together, which is how the rows that exercise the carrier alone reach one.
         /// Test builds only: every byte stream a client opens uses the handshake (`handshake::dial`, server design §3).
@@ -96,7 +127,8 @@ cfg_if::cfg_if! {
             limits: CarrierLimits,
         ) -> Accepted {
             let deadline = std::time::Instant::now() + CONNECT_BOUND;
-            connect_stream(address, policy, deadline)?.into_carrier(limits)
+            let gate = row_gate();
+            connect_stream(walk_to(address, &gate)?, policy, deadline)?.into_carrier(limits)
         }
     } else if #[cfg(all(test, windows))] {
         pub(crate) use windows::{PIPE_MODE, PIPE_OPEN_MODE, ProcessHold, create_first_instance, create_first_instance_with, created_pipe_dacl_sids, judge, pipe_sddl, squat};
@@ -104,6 +136,18 @@ cfg_if::cfg_if! {
         /// How long [`connect`] may take: the handshake's 30 seconds (server design §3).
         const CONNECT_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
+        /// What a row's walk is lent: Windows has no walk and no gate.
+        pub(crate) struct RowGate;
+
+        pub(crate) fn row_gate() -> RowGate {
+            RowGate
+        }
+
+        /// The rows' pipe checks of `address`. A refusal is the carrier's [`LocalRefusal::Address`].
+        pub(crate) fn walk_to<'g>(address: &LocalAddress, _: &'g RowGate) -> Result<Target<'g>, LocalRefusal> {
+            address::check_name(address.pipe_name())
+        }
+
         /// Connects and builds the carrier at once, with no handshake: [`connect_stream`] and
         /// [`RawConnection::into_carrier`] together, which is how the rows that exercise the carrier alone reach one.
         /// Test builds only: every byte stream a client opens uses the handshake (`handshake::dial`, server design §3).
@@ -114,7 +158,7 @@ cfg_if::cfg_if! {
             limits: CarrierLimits,
         ) -> Accepted {
             let deadline = std::time::Instant::now() + CONNECT_BOUND;
-            connect_stream(address, policy, deadline)?.into_carrier(limits)
+            connect_stream(walk_to(address, &row_gate())?, policy, deadline)?.into_carrier(limits)
         }
     }
 }
@@ -144,6 +188,9 @@ pub(crate) enum LocalRefusal {
     AddressTooLong { length: usize, limit: usize },
     /// The address names something that is not a socket this user owns.
     NotOurSocket,
+    /// The walk, or the pipe's checks, did not give what the connect or bind needs, and nothing was connected or bound:
+    /// `server_address_refused`, or, when nothing answers at the address (a missing name), `server_unavailable`.
+    Address { unavailable: bool, text: String },
     /// The peer check refused the other end. Nothing was sent to it.
     Peer(PeerRefusal),
     /// This process was refused a policy (it is itself sandboxed, or the check on it could not be made): there is no
@@ -184,6 +231,7 @@ impl fmt::Display for LocalRefusal {
                 )
             }
             LocalRefusal::NotOurSocket => f.write_str("the address is not a socket this user owns"),
+            LocalRefusal::Address { text, .. } => f.write_str(text),
             LocalRefusal::Peer(refusal) => write!(f, "the peer was refused: {refusal}"),
             LocalRefusal::Own(refusal) => f.write_str(&refusal.about_caller()),
             LocalRefusal::NameTaken => f.write_str("the pipe name is already taken"),

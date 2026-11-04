@@ -28,7 +28,10 @@ use crate::transport_host::carrier::{
         Bounds, ClientConfig, ClientOutcome, Control, Hello, Hooks, HostFault, Intent, OpenRequest,
         OpenedInfo, Refusal, State, WireEnd, dial,
     },
-    local::{LocalAddress, LocalListener, PeerPolicy, RawConnection, RuntimeDir, connect_stream},
+    local::{
+        LocalAddress, LocalListener, PeerPolicy, RawConnection, RuntimeDir, connect_stream,
+        row_gate, walk_to,
+    },
 };
 
 /// The longest a row waits for anything before it fails naming it.
@@ -242,7 +245,13 @@ pub(super) struct Dir {
 pub(super) fn dir() -> Dir {
     cfg_if::cfg_if! {
         if #[cfg(unix)] {
-            let guard = tempfile::Builder::new().prefix("gwz").tempdir().expect("tempdir");
+            // On macOS not the temporary directory, which may be a RAM disk mounted with `MNT_IGNORE_OWNERSHIP`, where
+            // the walk refuses a socket's directory (plan 2.3e2).
+            let guard = if cfg!(target_vendor = "apple") {
+                tempfile::Builder::new().prefix("gwz").tempdir_in("/private/tmp").expect("tempdir")
+            } else {
+                tempfile::Builder::new().prefix("gwz").tempdir().expect("tempdir")
+            };
             std::fs::set_permissions(guard.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
             let runtime = RuntimeDir::at(guard.path()).expect("a private directory");
             Dir { runtime, _guard: Some(guard) }
@@ -259,7 +268,9 @@ pub(super) fn dir() -> Dir {
 pub(super) fn listen(dir: &Dir, policy: PeerPolicy, limits: CarrierLimits) -> LocalListener {
     cfg_if::cfg_if! {
         if #[cfg(unix)] {
-            LocalListener::bind_at(dir.runtime.path(), "ws-0000000000000001", policy, limits).expect("bind")
+            let address = LocalAddress::from_path(&dir.runtime.path().join("ws-0000000000000001"));
+            let gate = row_gate();
+            LocalListener::bind(walk_to(&address, &gate).expect("the walk"), policy, limits).expect("bind")
         } else {
             LocalListener::bind(&dir.runtime, policy, limits).expect("bind")
         }
@@ -371,8 +382,9 @@ impl Host {
                 peer_pid: None,
                 bounds: Bounds::DEFAULT,
             };
+            let gate = row_gate();
             let (client, outcome) = dial(
-                self.address(),
+                walk_to(self.address(), &gate).expect("the walk"),
                 &PeerPolicy::current_user().unwrap(),
                 CarrierLimits::DEFAULT,
                 &config,
@@ -501,8 +513,10 @@ pub(super) struct Raw {
 impl Raw {
     pub(super) fn connect(address: &LocalAddress) -> Self {
         let policy = PeerPolicy::current_user().unwrap();
+        let gate = row_gate();
+        let target = walk_to(address, &gate).expect("the walk");
         let connection =
-            connect_stream(address, &policy, Instant::now() + WAIT).expect("the connect");
+            connect_stream(target, &policy, Instant::now() + WAIT).expect("the connect");
         Self { connection }
     }
 
